@@ -7,7 +7,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore } from './projects.mjs'
-import { DIRECTOR_SYSTEM, extractJson, inferActions, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
+import { DIRECTOR_SYSTEM, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -587,20 +587,8 @@ app.post('/api/projects/:id/chat', async (req, res) => {
         ],
       }),
     })
-    const parsed = parseDirectorReply(data.choices?.[0]?.message?.content || '', text, project)
+    const parsed = parseDirectorReply(data.choices?.[0]?.message?.content || '')
     const notes = []
-    if (!parsed.actions.length) parsed.actions = inferActions(text, project)
-    const blocked = /(不要生成|别生成|先不要|先别|不要出片)/.test(text)
-    const wantsGenerate = !blocked && (/(开始拍|开拍|开始生成|出片|继续拍|重做)/.test(text) || parsed.actions.some((item) => item.op === 'rewrite_shot'))
-    const wantsMerge = /(合并|拼接|拼起来)/.test(text) && !/(不要|先不)/.test(text)
-    parsed.actions = parsed.actions.filter((item) => {
-      if (item.op === 'generate' && !wantsGenerate) return false
-      if (item.op === 'merge' && !wantsMerge) return false
-      return true
-    })
-    if (!(project.shots || []).length && (project.idea || text) && !parsed.actions.some((item) => item.op === 'create_storyboard')) {
-      parsed.actions.unshift({ op: 'create_storyboard' })
-    }
     try {
       await applyActions(project, parsed.actions, notes)
     } catch (actionError) {

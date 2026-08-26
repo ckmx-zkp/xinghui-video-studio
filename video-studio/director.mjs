@@ -1,15 +1,16 @@
-export const DIRECTOR_SYSTEM = `你是星绘视频工坊的对话导演。用户不懂工作流、节点和本地推理软件，永远不要提到这些词，也不要让用户选择引擎细节。
-默认用本机生成草稿（不消耗云端视频次数）。只有用户明确说「用云端」「更好画质」「定妆成片」时，才把 engine 设为 cloud，并先在 say 里说明会消耗次数、等待确认后再 generate。
-缺信息才提问：没说拍什么时才问内容；没说横竖屏则默认 16:9；没说时长则默认 18 秒（3 个连续 6 秒镜头）。人物有多张参考图时，提醒用户把图拖到对应镜头上。
-你只输出一个 JSON 对象，不要 markdown。形状：
+export const DIRECTOR_SYSTEM = `你是星绘视频工坊的对话导演。用户不懂工作流、节点和本地推理软件，永远不要提到这些词。
+根据整段对话理解意图，不要靠死记关键词。用户用「开始」「可以」「行」「开干」「生成吧」「就这样拍」等表示同意开拍时，只要分镜已存在，就输出 generate；用户明确只要分镜、先不要出片、先看看时，不要 generate。改某一镜时：若用户同时要立刻重跑就 rewrite_shot + generate 该镜，若说先不要生成则只 rewrite_shot。
+默认本机草稿，不消耗云端次数。只有用户明确要云端更好画质时，才把 engine 设为 cloud，先说明会消耗次数，等确认后再 generate。
+缺关键信息才提问；没说画幅默认 16:9，没说时长默认 18 秒（3 个 6 秒镜头）。
+只输出一个 JSON 对象，不要 markdown：
 {"say":"对用户说的中文","actions":[...]}
-可用 actions：
+actions 可选：
 {"op":"update_brief","idea":"...","aspect":"16:9|9:16|1:1","duration":6|12|18,"engine":"local|cloud","title":"..."}
 {"op":"create_storyboard"}
-{"op":"rewrite_shot","shot":3,"instruction":"改成更震撼的蒙太奇"}
+{"op":"rewrite_shot","shot":3,"instruction":"..."}
 {"op":"generate","shots":"pending"|"all"|[1,3]}
 {"op":"merge"}
-shot 编号从 1 开始（S1=1）。用户说「开始拍/生成」就 generate pending。用户说「第三镜头改更震撼」就 rewrite_shot 然后 generate 该镜。分镜已有且用户没要求改时，不要重复 create_storyboard。`
+shot 从 1 起。分镜已有且用户没要求重写整集时，不要重复 create_storyboard。`
 
 export function extractJson(raw) {
   const cleaned = String(raw || '').replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```json|```/g, '').trim()
@@ -39,50 +40,11 @@ export function snapshotForDirector(project) {
   }
 }
 
-export function parseShotNumber(text) {
-  const source = String(text || '')
-  const patterns = [/S\s*(\d+)/i, /镜头\s*(\d+)/, /第\s*([一二三四五六七八九十\d]+)\s*镜/, /第\s*(\d+)\s*个/]
-  for (const pattern of patterns) {
-    const match = source.match(pattern)
-    if (!match) continue
-    const token = match[1]
-    const map = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
-    return map[token] || Number(token)
-  }
-  return 0
-}
-
-export function inferActions(userText, project) {
-  const text = String(userText || '')
-  const actions = []
-  if (!project.idea && text.trim()) actions.push({ op: 'update_brief', idea: text.trim() })
-  const shot = parseShotNumber(text)
-  if (shot && /(改|换|更|重做|重新|震撼|慢一点|快一点)/.test(text)) {
-    actions.push({ op: 'rewrite_shot', shot, instruction: text })
-    if (!/(不要|别|先不)/.test(text)) actions.push({ op: 'generate', shots: [shot] })
-    return actions
-  }
-  if (/(开始拍|开拍|开始生成|出片|继续拍)/.test(text) || (/(生成)/.test(text) && !/(不要|别|先不)/.test(text))) {
-    actions.push({ op: 'generate', shots: 'pending' })
-    return actions
-  }
-  if (/(合并|拼接|拼起来|成片)/.test(text) && (project.shots || []).filter((item) => item.filename).length >= 2) {
-    actions.push({ op: 'merge' })
-    return actions
-  }
-  if (!(project.shots || []).length && (project.idea || text.trim())) {
-    if (!project.idea) actions.push({ op: 'update_brief', idea: text.trim() })
-    actions.push({ op: 'create_storyboard' })
-  }
-  return actions
-}
-
-export function parseDirectorReply(raw, userText, project) {
+export function parseDirectorReply(raw) {
   let parsed
-  try { parsed = extractJson(raw) } catch { parsed = { say: String(raw || '').slice(0, 800), actions: [] } }
+  try { parsed = extractJson(raw) } catch { parsed = { say: String(raw || '').replace(/<think>[\s\S]*?<\/think>/g, '').slice(0, 800), actions: [] } }
   const say = String(parsed.say || parsed.message || '').trim()
-  let actions = Array.isArray(parsed.actions) ? parsed.actions : []
-  if (!actions.length) actions = inferActions(userText, project)
+  const actions = Array.isArray(parsed.actions) ? parsed.actions : []
   return { say: say || '我先根据你的话继续往下做。', actions }
 }
 
