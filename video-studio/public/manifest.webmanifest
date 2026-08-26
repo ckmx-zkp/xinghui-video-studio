@@ -1,0 +1,14 @@
+{
+  "name": "星绘视频工坊",
+  "short_name": "星绘",
+  "description": "对话出分镜、出片。生成在家里电脑完成。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#f44d50",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

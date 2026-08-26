@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+.xinghui-forward-pass
+remote-forward.txt
+*.htpasswd
 outputs/
 downloads/
 logs/
