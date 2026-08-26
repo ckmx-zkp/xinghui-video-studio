@@ -1,0 +1,22 @@
+# 本机密钥与生成结果
+.env
+.env.*
+!.env.example
+outputs/
+downloads/
+logs/
+
+# 本机 ComfyUI、Python 运行时、模型与缓存（体积大且机器相关）
+ComfyUI_windows_portable/
+
+# Node 依赖与构建产物
+video-studio/node_modules/
+video-studio/dist/
+video-studio/.vite/
+
+# 本机编辑器与临时文件
+.vscode/
+.idea/
+*.log
+Thumbs.db
+.DS_Store
