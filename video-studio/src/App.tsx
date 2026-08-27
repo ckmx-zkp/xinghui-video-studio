@@ -290,7 +290,7 @@ function App() {
           <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}><ImagePlus />素材</button>
           <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Settings />设置</button>
         </nav>
-        <div className="sidebar-note">直接说话即可<br />不用管后面的生成器</div>
+        <div className="sidebar-note">直接说话即可<br />说“直接开始”由导演自动完成并开拍</div>
       </aside>
 
       {view === 'create' && (

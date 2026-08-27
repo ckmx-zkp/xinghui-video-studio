@@ -41,12 +41,18 @@ const BRIEF_KEYS = ['goal', 'audience', 'platform', 'story', 'subject', 'visualS
 const PROJECT_PHASES = new Set(['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate', 'generating', 'delivery_review', 'delivered'])
 const SKILLS = new Set(['narrative-film', 'product-ad', 'social-koc', 'knowledge-video', 'custom-video'])
 
-// Natural-language confirmations are deliberately conservative. They advance
-// planning review gates, never the final video-generation gate.
+// Natural-language confirmations advance one planning gate. “Direct start” is
+// a distinct, explicit command: the director fills reasonable defaults and
+// launches a local render without turning the conversation into a questionnaire.
 export function isAdvanceIntent(value) {
   const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
   return /(?:确认|继续|下一步|开拍|开干|直接开始|开始制作(?:视频)?|直接制作|直接做|开始生成|开始做|开始吧|做吧|生成吧)$/u.test(text)
     || /^(?:好|好的|可以|行|没问题|就这样|就按这个)$/u.test(text)
+}
+
+export function isDirectStartIntent(value) {
+  const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
+  return /(?:直接开始(?:制作|生成)?(?:视频)?|直接制作(?:视频)?|直接做(?:视频)?|立即开始(?:制作|生成)?|现在开始(?:制作|生成)?|开拍)$/u.test(text)
 }
 
 function isShortAdvanceIntent(value) {
@@ -772,6 +778,66 @@ async function advancePlanningFromChat(project) {
   return ''
 }
 
+export function applyDirectorDefaults(project) {
+  project.creativeBrief = project.creativeBrief || {}
+  const brief = project.creativeBrief
+  const goal = String(brief.goal || project.idea || '按用户描述制作一支短视频').trim()
+  const defaults = {
+    goal,
+    audience: '泛短视频平台的普通观众',
+    platform: '短视频平台',
+    story: `围绕“${goal}”完成一个清晰、连续、可执行的短视频片段。`,
+    subject: '以用户描述的主体为核心，保持参考图中的外观与场景特征。',
+    visualStyle: '真实自然、主体清晰、适合短视频观看的摄影风格。',
+    tone: '贴合用户描述的情绪，以清晰易懂和可看性优先。',
+    audio: '首版以画面和环境氛围为主；未接通的配音、BGM、对口型不阻塞生成。',
+    constraints: '未指定项由导演按可执行性、主体一致性和短视频节奏自动决定。',
+  }
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!String(brief[key] || '').trim()) brief[key] = value
+  }
+  project.idea = brief.goal
+  return project
+}
+
+async function startLocalProject(project) {
+  const targets = resolveShotList('pending', project)
+  if (!targets.length) throw new Error('没有需要生成的镜头')
+  project.phase = 'generating'
+  for (const shot of targets) {
+    await startLocalShot(project, shot)
+    store.save(project)
+  }
+  return targets.length
+}
+
+async function directStartFromChat(project) {
+  applyDirectorDefaults(project)
+  if (project.phase === 'discovery') project.phase = 'brief_review'
+  if (project.phase === 'brief_review') await confirmBriefProject(project)
+  if (project.phase === 'concept_selection') {
+    const recommended = project.concepts?.[0]
+    if (!recommended) throw new Error('导演未能生成可执行的创意方向')
+    project.selectedConceptId = recommended.id
+    await makeStoryboard(project)
+    project.phase = 'storyboard_review'
+  }
+  if (project.phase === 'storyboard_review') {
+    if (!project.shots?.length) throw new Error('导演未能生成可执行的分镜')
+    await reviewStoryboard(project)
+    project.storyboardConfirmedAt = new Date().toISOString()
+    project.phase = 'quality_review'
+  }
+  if (project.phase === 'quality_review') project.phase = 'ready_to_generate'
+  if (project.phase !== 'ready_to_generate') throw new Error('项目当前不能直接开拍')
+  if (project.engine === 'cloud') {
+    const count = resolveShotList('pending', project).length
+    return `导演已自动完成简报、分镜和检查。云端生成将消耗 ${count} 次额度，请点击右侧按钮确认后开拍。`
+  }
+  const count = await startLocalProject(project)
+  return `导演已自动补齐简报、创意与分镜，并已提交 ${count} 个本机镜头开始生成。你可以在右侧查看进度。`
+}
+
 async function reviewStoryboard(project) {
   const concept = (project.concepts || []).find((item) => item.id === project.selectedConceptId)
   const prompt = `你是商业视频制作的质量审核导演。检查分镜是否忠于创作简报，主体是否连续，节奏是否适合总时长，每镜是否能被视频模型执行，声音设计是否连贯，结尾是否完成目标。不要改写分镜，只返回JSON：{"score":0,"verdict":"pass|revise","summary":"总评","checks":[{"label":"检查项","status":"pass|warning|fail","note":"依据"}],"recommendations":["可执行建议"]}。创作简报：${JSON.stringify(project.creativeBrief || {})}。创意方向：${JSON.stringify(concept || {})}。分镜：${JSON.stringify((project.shots || []).map(({ title, description, video_prompt }) => ({ title, description, video_prompt })))}`
@@ -1123,12 +1189,15 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     }
     store.save(project)
     userTurnPersisted = true
+    const directStart = isDirectStartIntent(text)
 
     // A short confirmation should never be sent back through the interview
     // model. It is a command for the current planning gate, not new creative
     // input. This also makes “好/继续/开始制作” usable on mobile.
     if (isShortAdvanceIntent(text) && project.phase !== 'discovery') {
-      const say = await advancePlanningFromChat(project)
+      const say = directStart
+        ? await directStartFromChat(project)
+        : await advancePlanningFromChat(project)
       if (!say) throw new Error('当前阶段不需要继续确认')
       project.messages.push({ role: 'assistant', content: say, insight: '', choices: [], ts: new Date().toISOString() })
       store.save(project)
@@ -1147,7 +1216,10 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     let reply = [parsed.say, notes.length ? notes.join('。') + '。' : ''].filter(Boolean).join('\n')
     // A detailed message can both revise the brief and say “直接开始”. Let the
     // director first apply the factual revision, then advance exactly one gate.
-    if (isAdvanceIntent(text) && project.phase === 'brief_review') {
+    if (directStart) {
+      const advanced = await directStartFromChat(project)
+      if (advanced) reply = advanced
+    } else if (isAdvanceIntent(text) && project.phase === 'brief_review') {
       const advanced = await advancePlanningFromChat(project)
       if (advanced) reply = advanced
     }

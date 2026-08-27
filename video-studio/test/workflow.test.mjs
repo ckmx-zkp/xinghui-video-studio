@@ -4,7 +4,7 @@ import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { briefReadiness, completionText, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
-import { app, historyForDirector, isAdvanceIntent, resolveRuntimeModes } from '../server.mjs'
+import { app, applyDirectorDefaults, historyForDirector, isAdvanceIntent, isDirectStartIntent, resolveRuntimeModes } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
@@ -112,6 +112,15 @@ describe('natural-language planning confirmations', () => {
     assert.equal(isAdvanceIntent('小狗在推车里开心玩耍，儿童奶音，然后开始制作'), true)
     assert.equal(isAdvanceIntent('把小狗换成黑色'), false)
     assert.equal(isAdvanceIntent('小狗从家里开始跑'), false)
+  })
+
+  it('treats direct start as a distinct instruction and fills safe planning defaults', () => {
+    assert.equal(isDirectStartIntent('直接开始制作视频！'), true)
+    assert.equal(isDirectStartIntent('继续'), false)
+    const project = { idea: '小狗坐推车兜风', creativeBrief: { goal: '小狗坐推车兜风' } }
+    applyDirectorDefaults(project)
+    for (const key of ['goal', 'audience', 'story', 'subject', 'visualStyle', 'tone']) assert.ok(project.creativeBrief[key])
+    assert.match(project.creativeBrief.audio, /不阻塞生成/)
   })
 })
 
