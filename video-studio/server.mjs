@@ -8,7 +8,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore } from './projects.mjs'
-import { briefReadiness, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
+import { briefReadiness, completionText, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -967,22 +967,28 @@ app.post('/api/projects/:id/generate', async (req, res) => {
 })
 
 async function completeDirectorTurn(project, history) {
+  const projectSnapshot = snapshotForDirector(project)
   const baseMessages = [
     { role: 'system', content: directorSystemFor(project) },
-    { role: 'system', content: `当前项目：${JSON.stringify(snapshotForDirector(project))}` },
+    { role: 'system', content: `当前项目：${JSON.stringify(projectSnapshot)}` },
   ]
-  const request = async (retry = false) => miniFetch(`${apiHost}/v1/chat/completions`, {
+  const request = async (recovery = false) => miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST',
     body: JSON.stringify({
       model: textModel,
-      temperature: retry ? 0.15 : 0.3,
-      max_tokens: retry ? 10000 : 8000,
-      response_format: { type: 'json_object' },
-      messages: [
-        ...baseMessages,
-        ...(retry ? [{ role: 'system', content: '上一次输出被截断。请缩短思考并只返回完整、可解析的 JSON 对象。' }] : []),
-        ...history,
-      ],
+      temperature: recovery ? 0.1 : 0.3,
+      max_tokens: recovery ? 12000 : 8000,
+      ...(recovery ? {} : { response_format: { type: 'json_object' } }),
+      messages: recovery ? [
+        {
+          role: 'system',
+          content: `你是星绘视频工坊的创作导演。上一次回复没有完整输出，现在根据当前项目和用户最后一句话重新完成本轮访谈。
+当前项目：${JSON.stringify(projectSnapshot)}
+要求：先回应用户刚才的决定，再给出专业判断，只追问一个最有价值的问题，并提供 2-4 个有真实差异的选择。discovery 阶段可用 update_brief 记录本轮新增信息，信息齐全时可用 present_brief；不得生成分镜或视频。
+严格只输出一个简短 JSON 对象：{"say":"不超过240字","insight":"不超过180字","choices":[{"label":"不超过12字","description":"不超过60字","reply":"以用户口吻写出的完整选择，不超过100字"}],"actions":[]}`,
+        },
+        history.at(-1) || { role: 'user', content: '请继续当前创作访谈。' },
+      ] : [...baseMessages, ...history],
     }),
   })
 
@@ -996,13 +1002,27 @@ async function completeDirectorTurn(project, history) {
   }
 
   let data = await request(false)
-  let raw = data.choices?.[0]?.message?.content || ''
+  let raw = completionText(data.choices?.[0]?.message)
   try {
     return parseComplete(raw)
-  } catch {
+  } catch (firstError) {
+    console.warn('[director] structured reply invalid; retrying with compact context', {
+      finishReason: data.choices?.[0]?.finish_reason || 'unknown',
+      contentLength: raw.length,
+      reason: firstError.message,
+    })
     data = await request(true)
-    raw = data.choices?.[0]?.message?.content || ''
-    return parseComplete(raw)
+    raw = completionText(data.choices?.[0]?.message)
+    try {
+      return parseComplete(raw)
+    } catch (recoveryError) {
+      console.warn('[director] compact recovery reply invalid', {
+        finishReason: data.choices?.[0]?.finish_reason || 'unknown',
+        contentLength: raw.length,
+        reason: recoveryError.message,
+      })
+      throw new Error('导演本轮回复被截断，自动重试仍未完成，请再次提交刚才的选择')
+    }
   }
 }
 

@@ -74,6 +74,18 @@ export function extractJson(raw) {
   }
 }
 
+export function completionText(message) {
+  const content = message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.map((item) => {
+    if (typeof item === 'string') return item
+    if (typeof item?.text === 'string') return item.text
+    if (typeof item?.content === 'string') return item.content
+    return ''
+  }).join('')
+}
+
 export function snapshotForDirector(project) {
   return {
     title: project.title,

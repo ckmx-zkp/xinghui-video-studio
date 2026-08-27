@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { briefReadiness, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
+import { briefReadiness, completionText, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
 import { app, historyForDirector, resolveRuntimeModes } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -70,6 +70,13 @@ describe('director workflow contract', () => {
     const parsed = extractJson('{"say":"继续","insight":"画面成立","choices":[{"label":"方向A","reply":"选择A"},{"label":"方向B","reply":"选择B"}],')
     assert.equal(parsed.say, '继续')
     assert.equal(parsed.choices.length, 2)
+  })
+
+  it('reads text from segmented completion content', () => {
+    assert.equal(completionText({ content: [
+      { type: 'text', text: '{"say":"继续",' },
+      { type: 'text', text: '"actions":[]}' },
+    ] }), '{"say":"继续","actions":[]}')
   })
 
   it('resolves only pending or explicitly selected shots', () => {
