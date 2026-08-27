@@ -131,7 +131,9 @@ function App() {
   const [pendingAttachment, setPendingAttachment] = useState<Attachment | null>(null)
   const [uploadingImage, setUploadingImage] = useState(false)
   const [draggingImage, setDraggingImage] = useState(false)
+  const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
+  const busyRef = useRef<HTMLDivElement>(null)
 
   const refreshStatus = () => api<Status>('/api/status').then(setStatus)
   const loadProject = async (id?: string) => {
@@ -156,9 +158,10 @@ function App() {
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' })
+    if (busy) busyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [project?.messages?.length, busy])
 
-  const send = async (override?: string) => {
+  const send = async (override?: string, choiceId?: string) => {
     if (!project || busy) return
     if (uploadingImage) return setError('照片仍在上传，请等待缩略图显示后再发送')
     const text = override?.trim() || draft.trim()
@@ -169,6 +172,7 @@ function App() {
     const submittedContent = text || '请分析这张参考图，并结合图片继续创作访谈。'
     const optimisticId = `pending-${crypto.randomUUID()}`
     setBusy(true)
+    setPendingChoiceId(choiceId || null)
     setError('')
     setDraft('')
     setPendingAttachment(null)
@@ -196,6 +200,7 @@ function App() {
       setError(item instanceof Error ? item.message : '对话失败')
     } finally {
       setBusy(false)
+      setPendingChoiceId(null)
     }
   }
 
@@ -263,6 +268,7 @@ function App() {
 
   const preview = project?.finalUrl || (project?.shots?.find((shot) => shot.filename) ? `/media/${project.shots.find((shot) => shot.filename)?.filename}` : '')
   const messages = project?.messages || []
+  const latestChoiceMessageIndex = messages.reduce((latest, message, index) => message.role === 'assistant' && message.choices?.length ? index : latest, -1)
 
   return (
     <div className="app-shell chat-app">
@@ -307,15 +313,15 @@ function App() {
                   {message.role === 'assistant' && Boolean(message.choices?.length) && (
                     <div className="director-choices">
                       {message.choices?.map((choice) => (
-                        <button key={choice.id} disabled={busy || index !== messages.length - 1} onClick={() => send(choice.reply)}>
-                          <b>{choice.label}</b><small>{choice.description}</small><ChevronRight />
+                        <button key={choice.id} className={pendingChoiceId === choice.id ? 'submitting' : ''} disabled={busy || index !== latestChoiceMessageIndex} onClick={() => send(choice.reply, choice.id)}>
+                          <b>{choice.label}</b><small>{pendingChoiceId === choice.id ? '正在提交给导演…' : choice.description}</small>{pendingChoiceId === choice.id ? <LoaderCircle className="spin" /> : <ChevronRight />}
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
               ))}
-              {busy && <div className="bubble assistant muted" role="status" aria-live="polite"><LoaderCircle className="spin" />导演正在想下一步…</div>}
+              {busy && <div ref={busyRef} className="bubble assistant muted" role="status" aria-live="polite"><LoaderCircle className="spin" />导演正在想下一步…</div>}
             </div>
             {error && <div className="error"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
             <form className={`chat-input ${draggingImage ? 'is-dragging' : ''} ${busy ? 'is-busy' : ''}`} onSubmit={(event) => { event.preventDefault(); send() }} onDragOver={(event) => {
