@@ -10,6 +10,7 @@
     "start": "node server.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "node --test",
     "preview": "vite preview"
   },
   "dependencies": {

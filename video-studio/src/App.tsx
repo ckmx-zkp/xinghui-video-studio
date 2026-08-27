@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronRight, CircleAlert, Cloud, Film, FolderOpen, History, ImagePlus, LoaderCircle, Plus, Send, Settings, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, CircleAlert, Cloud, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Play, Plus, RefreshCw, Send, Settings, Sparkles, X } from 'lucide-react'
 import './App.css'
 
 type Shot = {
@@ -13,7 +13,39 @@ type Shot = {
   filename?: string
   imageFile?: string
 }
-type Message = { role: 'user' | 'assistant'; content: string; ts?: string }
+type DirectorChoice = { id: string; label: string; description: string; reply: string }
+type Attachment = { id: string; filename: string; type: 'image'; mime?: string; size?: number; url: string }
+type Message = { role: 'user' | 'assistant'; content: string; attachments?: Attachment[]; insight?: string; choices?: DirectorChoice[]; ts?: string }
+type UploadResult = { attachment: Attachment; project: Project }
+type CreativeBrief = {
+  goal: string
+  audience: string
+  platform: string
+  story: string
+  subject: string
+  visualStyle: string
+  tone: string
+  audio: string
+  constraints: string
+  referenceNotes: string
+}
+type Concept = {
+  id: string
+  title: string
+  logline: string
+  narrative: string
+  visualHook: string
+  ending: string
+}
+type ProductionTask = { id: string; index: number; title: string; purpose: string; deliverable: string; owner: string }
+type QualityReview = {
+  score: number
+  verdict: 'pass' | 'revise'
+  summary: string
+  checks: Array<{ label: string; status: 'pass' | 'warning' | 'fail'; note: string }>
+  recommendations: string[]
+}
+type Asset = { id: string; projectId: string; projectTitle: string; filename: string; title: string; url: string; updatedAt: string }
 type Project = {
   id: string
   title: string
@@ -21,41 +53,75 @@ type Project = {
   aspect: string
   duration: number
   engine: string
+  skill: string
+  phase: string
+  discoveryTurns: number
+  creativeBrief: CreativeBrief
+  concepts: Concept[]
+  productionPlan: ProductionTask[]
+  referenceImages: string[]
+  qualityReview?: QualityReview | null
+  stageInsight?: string
+  stageChoices?: DirectorChoice[]
+  selectedConceptId?: string
   shots: Shot[]
   messages: Message[]
   finalUrl?: string
   finalFilename?: string
+  finalError?: string
+  demoPreview?: boolean
 }
 type Status = {
   m3: boolean
   comfy: boolean
+  demo?: boolean
+  directorMode?: 'live' | 'demo' | 'offline'
+  videoDemo?: boolean
+  videoMode?: 'live' | 'demo'
   model: string
   quota: { used: number; total: number; weeklyUsed: number; weeklyTotal: number }
-  models?: { ready: boolean }
+  models?: { ready: boolean; simulated?: boolean }
 }
 
 const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
-  const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) } })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error || '请求失败')
+  const headers = new Headers(options?.headers)
+  if (!(options?.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  const response = await fetch(url, { ...options, headers })
+  const contentType = response.headers.get('content-type') || ''
+  const data = contentType.includes('application/json') ? await response.json() : { error: await response.text() }
+  if (!response.ok) throw new Error(data.error || `请求失败 (${response.status})`)
   return data
 }
-const readFile = (file: File) => new Promise<string>((resolve, reject) => {
-  const reader = new FileReader()
-  reader.onload = () => resolve(String(reader.result))
-  reader.onerror = () => reject(new Error('读取图片失败'))
-  reader.readAsDataURL(file)
-})
 const statusLabel = (value: string) => value === 'Success' ? '已完成' : value === 'Fail' ? '失败' : value === 'ready' ? '待生成' : '处理中'
+const phaseLabel: Record<string, string> = {
+  discovery: '需求访谈',
+  brief_review: '简报评审',
+  concept_selection: '创意方向',
+  storyboard_review: '分镜评审',
+  quality_review: '质量审核',
+  ready_to_generate: '等待开拍',
+  generating: '生成中',
+  delivery_review: '交付评审',
+  delivered: '已交付',
+}
+const skillLabel: Record<string, string> = {
+  'narrative-film': '剧情短片',
+  'product-ad': '产品广告',
+  'social-koc': 'KOC 社媒',
+  'knowledge-video': '知识视频',
+  'custom-video': '自定义流程',
+}
 
 function App() {
-  const [view, setView] = useState<'create' | 'history' | 'settings'>('create')
+  const [view, setView] = useState<'create' | 'history' | 'assets' | 'settings'>('create')
   const [status, setStatus] = useState<Status | null>(null)
   const [project, setProject] = useState<Project | null>(null)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [pendingImage, setPendingImage] = useState('')
+  const [pendingAttachment, setPendingAttachment] = useState<Attachment | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [draggingImage, setDraggingImage] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
 
   const refreshStatus = () => api<Status>('/api/status').then(setStatus)
@@ -67,8 +133,8 @@ function App() {
 
   const inflight = (project?.shots || []).filter((shot) => shot.taskId && !['Success', 'Fail'].includes(shot.status)).map((shot) => shot.taskId).join(',')
   // Load current project and backend status once after mount.
-  // oxlint-disable-next-line react/set-state-in-effect
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
     Promise.all([refreshStatus(), loadProject()]).catch((item) => setError(item.message))
   }, [])
 
@@ -83,22 +149,25 @@ function App() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' })
   }, [project?.messages?.length])
 
-  const send = async () => {
+  const send = async (override?: string) => {
     if (!project || busy) return
-    const text = draft.trim()
-    if (!text && !pendingImage) return
+    if (uploadingImage) return setError('照片仍在上传，请等待缩略图显示后再发送')
+    const text = override?.trim() || draft.trim()
+    if (!text && !pendingAttachment) return
+    const submittedDraft = draft
     setBusy(true)
     setError('')
     setDraft('')
     try {
       const next = await api<Project>(`/api/projects/${project.id}/chat`, {
         method: 'POST',
-        body: JSON.stringify({ message: text || '请看我上传的参考图', image: pendingImage || undefined }),
+        body: JSON.stringify({ message: text, attachmentIds: pendingAttachment ? [pendingAttachment.id] : [] }),
       })
-      setPendingImage('')
+      setPendingAttachment(null)
       setProject(next)
       refreshStatus().catch(() => {})
     } catch (item) {
+      if (!override) setDraft((current) => current || submittedDraft)
       setError(item instanceof Error ? item.message : '对话失败')
     } finally {
       setBusy(false)
@@ -109,15 +178,62 @@ function App() {
     const created = await api<Project>('/api/projects', { method: 'POST' })
     setProject(created)
     setDraft('')
-    setPendingImage('')
+    setPendingAttachment(null)
+  }
+
+  const runProjectAction = async (action: string, body?: Record<string, unknown>) => {
+    if (!project || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const next = await api<Project>(`/api/projects/${project.id}/${action}`, {
+        method: 'POST',
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      setProject(next)
+      refreshStatus().catch(() => {})
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '操作失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const uploadReference = async (file: File, shotIndex?: number) => {
+    if (!project) throw new Error('项目尚未载入')
+    if (file.size > 20 * 1024 * 1024) throw new Error('参考图不能超过20MB')
+    const supported = /^image\/(jpeg|png|webp)$/i.test(file.type) || /\.(jpe?g|png|webp)$/i.test(file.name)
+    if (!supported) throw new Error('当前支持 JPG、PNG、WebP；请先在手机相册中导出为兼容格式')
+    const form = new FormData()
+    form.append('image', file, file.name || 'reference-image')
+    if (shotIndex !== undefined) form.append('shotIndex', String(shotIndex))
+    return api<UploadResult>(`/api/projects/${project.id}/images`, { method: 'POST', body: form })
+  }
+
+  const selectReferenceImage = async (file?: File) => {
+    if (!file || !project || uploadingImage) return
+    setUploadingImage(true)
+    setError('')
+    try {
+      const result = await uploadReference(file)
+      setPendingAttachment(result.attachment)
+      setProject(result.project)
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '照片上传失败')
+    } finally {
+      setUploadingImage(false)
+    }
   }
 
   const attachShotImage = async (index: number, file?: File) => {
     if (!file || !project) return
-    if (file.size > 20 * 1024 * 1024) return setError('参考图不能超过20MB')
-    const image = await readFile(file)
-    const next = await api<Project>(`/api/projects/${project.id}/shots/${index}/image`, { method: 'POST', body: JSON.stringify({ image }) })
-    setProject(next)
+    setError('')
+    try {
+      const result = await uploadReference(file, index)
+      setProject(result.project)
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '镜头参考图上传失败')
+    }
   }
 
   const preview = project?.finalUrl || (project?.shots?.find((shot) => shot.filename) ? `/media/${project.shots.find((shot) => shot.filename)?.filename}` : '')
@@ -128,15 +244,16 @@ function App() {
       <header className="topbar">
         <div className="brand"><Sparkles size={25} fill="currentColor" /><strong>星绘视频工坊</strong></div>
         <div className="connections">
-          <span className={status?.m3 ? 'online' : 'offline'}><i />导演 {status?.m3 ? '已连接' : '未连接'}</span>
-          <span className={status?.comfy ? 'online' : 'offline'}><i />本机生成 {status?.comfy ? '就绪' : '未启动'}</span>
-          <span className="quota"><Cloud size={17} />今日成片额度 {status?.quota.used ?? 0}/{status?.quota.total ?? 3}</span>
+          <span className={status?.m3 ? 'online' : 'offline'}><i />导演 {status?.directorMode === 'demo' ? '固定演示' : status?.m3 ? `${status.model} 已连接` : '未连接'}</span>
+          <span className={status?.comfy ? 'online' : 'offline'}><i />本机生成 {status?.videoDemo ? '模拟模式' : status?.comfy ? '就绪' : '未启动'}</span>
+          <span className="quota"><Cloud size={17} />{status?.quota.total ? `今日成片额度 ${status.quota.used}/${status.quota.total}` : '云端额度未连接'}</span>
         </div>
       </header>
       <aside className="sidebar">
         <nav>
           <button className={view === 'create' ? 'active' : ''} onClick={() => setView('create')}><Film />创作</button>
           <button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}><History />项目</button>
+          <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}><ImagePlus />素材</button>
           <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Settings />设置</button>
         </nav>
         <div className="sidebar-note">直接说话即可<br />不用管后面的生成器</div>
@@ -147,28 +264,66 @@ function App() {
           <main className="workspace chat-workspace">
             <div className="chat-log" ref={logRef}>
               {messages.length === 0 && (
-                <div className="bubble assistant">想拍什么直接说。例如「做玄奘第一集」。缺关键信息我再问你，默认横屏 18 秒、本机出片，不消耗云端次数。</div>
+                <>
+                  <div className="bubble assistant">这次想做一支什么样的视频？先说一个大致想法，我会和你一起把故事、受众与画面方向梳理清楚。</div>
+                  <div className="quick-starts">
+                    <button onClick={() => setDraft('我想制作一支剧情短片，先帮我梳理故事和人物。')}>剧情短片</button>
+                    <button onClick={() => setDraft('我想为一个产品制作广告，请先了解产品、受众和卖点。')}>产品广告</button>
+                    <button onClick={() => setDraft('我想制作一支真实自然的 KOC 社媒视频。')}>KOC 社媒</button>
+                    <button onClick={() => setDraft('我想把一个知识主题做成容易理解的短视频。')}>知识视频</button>
+                  </div>
+                </>
               )}
               {messages.map((message, index) => (
-                <div key={`${message.ts || index}-${index}`} className={`bubble ${message.role}`}>{message.content}</div>
+                <div key={`${message.ts || index}-${index}`} className={`bubble ${message.role}`}>
+                  {Boolean(message.attachments?.length) && <div className="message-attachments">{message.attachments?.map((attachment) => <img key={attachment.id} src={attachment.url} alt="用户上传的参考图" />)}</div>}
+                  <div>{message.content}</div>
+                  {message.role === 'assistant' && message.insight && <div className="director-insight"><Sparkles /> <span><b>导演判断</b>{message.insight}</span></div>}
+                  {message.role === 'assistant' && Boolean(message.choices?.length) && (
+                    <div className="director-choices">
+                      {message.choices?.map((choice) => (
+                        <button key={choice.id} disabled={busy || index !== messages.length - 1} onClick={() => send(choice.reply)}>
+                          <b>{choice.label}</b><small>{choice.description}</small><ChevronRight />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
               {busy && <div className="bubble assistant muted"><LoaderCircle className="spin" />导演正在想下一步…</div>}
             </div>
             {error && <div className="error"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
-            <form className="chat-input" onSubmit={(event) => { event.preventDefault(); send() }}>
-              <label className="chat-attach">
-                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={async (event) => {
-                  const file = event.target.files?.[0]
+            <form className={`chat-input ${draggingImage ? 'is-dragging' : ''}`} onSubmit={(event) => { event.preventDefault(); send() }} onDragOver={(event) => {
+              event.preventDefault()
+              if (event.dataTransfer.types.includes('Files')) setDraggingImage(true)
+            }} onDragLeave={() => setDraggingImage(false)} onDrop={(event) => {
+              event.preventDefault()
+              setDraggingImage(false)
+              const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'))
+              if (file) selectReferenceImage(file)
+              else setError('请拖入 JPG、PNG 或 WebP 图片')
+            }}>
+              <div className="chat-field">
+                {pendingAttachment && <div className="pending-attachment"><img src={pendingAttachment.url} alt="待发送参考图" /><button type="button" aria-label="移除待发送参考图" title="移除图片" onClick={() => setPendingAttachment(null)}><X /></button></div>}
+                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="描述需求或粘贴参考图" rows={2} onPaste={(event) => {
+                  const file = Array.from(event.clipboardData.files).find((item) => item.type.startsWith('image/'))
                   if (!file) return
-                  if (file.size > 20 * 1024 * 1024) return setError('参考图不能超过20MB')
-                  setPendingImage(await readFile(file))
+                  event.preventDefault()
+                  selectReferenceImage(file)
+                }} onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() }
                 }} />
-                {pendingImage ? <img src={pendingImage} alt="待发送参考图" /> : <ImagePlus size={20} />}
-              </label>
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="说想拍什么，或「第三镜头更震撼」" rows={2} onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() }
-              }} />
-              <button className="primary" type="submit" disabled={busy}><Send size={18} />发送</button>
+                <label className={`chat-image-button ${uploadingImage ? 'uploading' : ''}`} title={uploadingImage ? '图片上传中' : '添加参考图'}>
+                  <input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploadingImage} onChange={(event) => {
+                    const file = event.currentTarget.files?.[0]
+                    event.currentTarget.value = ''
+                    selectReferenceImage(file)
+                  }} />
+                  {uploadingImage ? <LoaderCircle className="spin" /> : <ImagePlus />}
+                </label>
+                {draggingImage && <div className="drop-hint">松开添加图片</div>}
+              </div>
+              <button className="primary" type="submit" disabled={busy || uploadingImage}><Send size={18} />{uploadingImage ? '上传中' : '发送'}</button>
             </form>
             <section className="preview compact">
               <div className="section-head">
@@ -178,22 +333,24 @@ function App() {
                   <button onClick={newProject}><Plus />新项目</button>
                 </div>
               </div>
-              <div className="player">{preview ? <video src={preview} controls /> : <div className="empty-player"><span>镜头完成后会自动出现在这里</span></div>}</div>
+              <div className="player">{preview === 'demo://preview' ? <div className="demo-preview"><Film /><b>演示成片预览</b><span>阶段流转已完成，未执行真实视频推理</span></div> : preview ? <video src={preview} controls /> : <div className="empty-player"><span>镜头完成后会自动出现在这里</span></div>}</div>
             </section>
           </main>
           <aside className="plan-rail">
             <div className="rail-head">
               <div>
                 <h2>{project?.title || '制作计划'}</h2>
-                <p>{project?.shots?.length || 0} 个镜头 · {project?.aspect} · {project?.engine === 'cloud' ? '云端成片' : '本机草稿'}</p>
+                <p>{phaseLabel[project?.phase || 'discovery']} · {project?.aspect} · {project?.engine === 'cloud' ? '云端成片' : '本机草稿'}</p>
               </div>
             </div>
+            {project && <WorkflowPanel project={project} busy={busy} onAction={runProjectAction} />}
+            {project && project.productionPlan.length > 0 && <ProductionCanvas project={project} />}
             <div className="shots">
               {(project?.shots || []).map((shot) => (
                 <article key={shot.id} className="shot">
                   <label className="shot-thumb">
                     <span>{shot.index + 1}</span>
-                    {shot.filename ? <video src={`/media/${shot.filename}`} muted /> : shot.imageFile ? <img src={`/api/projects/${project?.id}/media/${shot.imageFile}`} alt={shot.title} /> : <ImagePlus />}
+                    {shot.filename && !project?.demoPreview ? <video src={`/media/${shot.filename}`} muted /> : shot.filename ? <Check /> : shot.imageFile ? <img src={`/api/projects/${project?.id}/media/${shot.imageFile}`} alt={shot.title} /> : <ImagePlus />}
                     <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => attachShotImage(shot.index, event.target.files?.[0])} />
                   </label>
                   <div className="shot-body">
@@ -211,8 +368,168 @@ function App() {
       )}
 
       {view === 'history' && <HistoryPage onOpen={async (id) => { await loadProject(id); setView('create') }} />}
+      {view === 'assets' && project && <AssetsPage project={project} busy={busy} onUse={(asset) => runProjectAction('use-asset', { sourceProjectId: asset.projectId, filename: asset.filename })} />}
       {view === 'settings' && <SettingsPage status={status} />}
     </div>
+  )
+}
+
+const briefRows: Array<[keyof CreativeBrief, string]> = [
+  ['goal', '创作目标'],
+  ['audience', '目标受众'],
+  ['platform', '发布平台'],
+  ['story', '故事主线'],
+  ['subject', '主体角色'],
+  ['visualStyle', '视觉风格'],
+  ['tone', '情绪基调'],
+  ['audio', '声音设计'],
+  ['constraints', '边界要求'],
+]
+
+function WorkflowPanel({ project, busy, onAction }: {
+  project: Project
+  busy: boolean
+  onAction: (action: string, body?: Record<string, unknown>) => void
+}) {
+  const pending = project.shots.filter((shot) => !shot.taskId || shot.status === 'Fail' || shot.status === 'ready')
+  const processing = project.shots.filter((shot) => shot.taskId && !['Success', 'Fail'].includes(shot.status)).length
+  const failed = project.shots.filter((shot) => shot.status === 'Fail').length
+
+  if (project.phase === 'discovery') {
+    return (
+      <section className="workflow-panel discovery-panel">
+        <div className="workflow-title"><Sparkles />需求访谈 <span>{project.discoveryTurns || 0} 轮</span></div>
+        <p>{project.creativeBrief?.goal || '等待创作想法'}</p>
+      </section>
+    )
+  }
+
+  if (project.phase === 'brief_review') {
+    return (
+      <section className="workflow-panel">
+        <div className="workflow-title"><Check />创作简报</div>
+        <dl className="brief-grid">
+          {briefRows.filter(([key]) => project.creativeBrief?.[key]).map(([key, label]) => (
+            <div key={key}><dt>{label}</dt><dd>{project.creativeBrief[key]}</dd></div>
+          ))}
+          <div><dt>创作方法</dt><dd>{skillLabel[project.skill] || '自定义流程'}</dd></div>
+          <div><dt>成片规格</dt><dd>{project.aspect} · {project.duration} 秒 · {project.engine === 'cloud' ? '云端成片' : '本机草稿'}</dd></div>
+        </dl>
+        <button className="workflow-primary" disabled={busy} onClick={() => onAction('confirm-brief')}><Lightbulb />确认简报，生成创意方向</button>
+      </section>
+    )
+  }
+
+  if (project.phase === 'concept_selection') {
+    return (
+      <section className="workflow-panel">
+        <div className="workflow-title"><Lightbulb />选择创意方向</div>
+        {project.stageInsight && <p className="stage-insight">{project.stageInsight}</p>}
+        <div className="concept-list">
+          {project.concepts.map((concept) => (
+            <article key={concept.id} className="concept-option">
+              <h3>{concept.title}</h3>
+              <p>{concept.logline}</p>
+              <small>{concept.visualHook}</small>
+              <button disabled={busy} onClick={() => onAction('select-concept', { conceptId: concept.id })}>选择此方向<ChevronRight /></button>
+            </article>
+          ))}
+        </div>
+        <div className="workflow-actions">
+          <button disabled={busy} onClick={() => onAction('revise-brief')}><ArrowLeft />修改简报</button>
+          <button disabled={busy} onClick={() => onAction('regenerate-concepts')}><RefreshCw />换一组</button>
+        </div>
+      </section>
+    )
+  }
+
+  if (project.phase === 'storyboard_review') {
+    return (
+      <section className="workflow-panel">
+        <div className="workflow-title"><Film />分镜评审</div>
+        <p>{project.stageInsight || `共 ${project.shots.length} 镜，${project.duration} 秒`}</p>
+        {Boolean(project.stageChoices?.length) && <div className="stage-choices">{project.stageChoices?.map((choice) => <button key={choice.id} disabled={busy} onClick={() => onAction('chat', { message: choice.reply })}><b>{choice.label}</b><small>{choice.description}</small></button>)}</div>}
+        <button className="workflow-primary" disabled={busy || !project.shots.length} onClick={() => onAction('confirm-storyboard')}><Check />确认分镜</button>
+        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('reselect-concept')}><ArrowLeft />重新选择方向</button>
+      </section>
+    )
+  }
+
+  if (project.phase === 'quality_review') {
+    const review = project.qualityReview
+    return (
+      <section className="workflow-panel quality-panel">
+        <div className="workflow-title"><Check />制作质量审核 <span>{review?.score ?? 0} 分</span></div>
+        <p>{review?.summary}</p>
+        <div className="quality-checks">
+          {(review?.checks || []).map((check) => (
+            <div key={check.label} className={check.status}><i /> <span><b>{check.label}</b><small>{check.note}</small></span></div>
+          ))}
+        </div>
+        {(review?.recommendations || []).length > 0 && <ul>{review?.recommendations.map((item) => <li key={item}>{item}</li>)}</ul>}
+        <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-quality')}><Check />通过审核，准备开拍</button>
+        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改分镜</button>
+      </section>
+    )
+  }
+
+  if (project.phase === 'ready_to_generate') {
+    const cloud = project.engine === 'cloud'
+    return (
+      <section className={`workflow-panel shoot-panel ${cloud ? 'cloud-shoot' : ''}`}>
+        <div className="workflow-title"><Play />准备开拍</div>
+        <p>{pending.length} 个镜头 · {cloud ? `将消耗 ${pending.length} 次云端额度` : '本机生成，不消耗云端额度'}</p>
+        <button className="workflow-primary" disabled={busy || !pending.length} onClick={() => onAction('generate', cloud ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}>
+          <Play />{cloud ? `确认消耗 ${pending.length} 次并开拍` : '开始本机生成'}
+        </button>
+        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回调整分镜</button>
+      </section>
+    )
+  }
+
+  if (project.phase === 'generating') {
+    return (
+      <section className="workflow-panel">
+        <div className="workflow-title"><LoaderCircle className={processing ? 'spin' : ''} />镜头生成中</div>
+        <p>{processing ? `${processing} 个任务正在处理` : failed ? `${failed} 个镜头生成失败` : pending.length ? `${pending.length} 个镜头等待继续生成` : '正在整理成片'}</p>
+        {pending.length > 0 && <button className="workflow-primary" disabled={busy} onClick={() => onAction('generate', project.engine === 'cloud' ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}><RefreshCw />{failed ? '重试失败镜头' : '继续生成未完成镜头'}</button>}
+        {project.finalError && <p className="workflow-error">{project.finalError}</p>}
+      </section>
+    )
+  }
+
+  if (project.phase === 'delivery_review') {
+    return (
+      <section className="workflow-panel delivery-panel">
+        <div className="workflow-title"><Film />成片交付评审</div>
+        <p>{project.title}</p>
+        <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-delivery')}><Check />确认交付</button>
+        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改</button>
+      </section>
+    )
+  }
+
+  return (
+    <section className="workflow-panel completed-panel">
+      <div className="workflow-title"><Check />项目已完成</div>
+      <p>{project.title}</p>
+    </section>
+  )
+}
+
+function ProductionCanvas({ project }: { project: Project }) {
+  return (
+    <section className="production-canvas">
+      <div className="workflow-title"><Sparkles />制作画布</div>
+      <div className="production-nodes">
+        {project.productionPlan.map((task, index) => (
+          <article key={task.id}>
+            <span>{String(index + 1).padStart(2, '0')}</span>
+            <div><h3>{task.title}</h3><p>{task.deliverable}</p><small>{task.owner}</small></div>
+          </article>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -248,16 +565,42 @@ function HistoryPage({ onOpen }: { onOpen: (id: string) => void }) {
   )
 }
 
+function AssetsPage({ project, busy, onUse }: { project: Project; busy: boolean; onUse: (asset: Asset) => void }) {
+  const [items, setItems] = useState<Asset[]>([])
+  const [loadError, setLoadError] = useState('')
+  useEffect(() => {
+    api<Asset[]>('/api/assets').then(setItems).catch((item) => setLoadError(item instanceof Error ? item.message : '素材加载失败'))
+  }, [project.id, project.referenceImages?.length])
+  return (
+    <main className="page assets-page">
+      <h1>素材中心</h1>
+      <p>当前项目：{project.title}</p>
+      {loadError && <div className="error"><CircleAlert size={18} />{loadError}</div>}
+      <div className="asset-grid">
+        {items.map((asset) => (
+          <article key={asset.id} className="asset-card">
+            <img src={asset.url} alt={asset.title} />
+            <div><b>{asset.title}</b><small>{asset.projectTitle}</small></div>
+            <button disabled={busy || asset.projectId === project.id} onClick={() => onUse(asset)}>{asset.projectId === project.id ? <Check /> : <Plus />}{asset.projectId === project.id ? '已在项目中' : '用于当前项目'}</button>
+          </article>
+        ))}
+        {!items.length && !loadError && <div className="empty">还没有沉淀的参考素材</div>}
+      </div>
+    </main>
+  )
+}
+
 function SettingsPage({ status }: { status: Status | null }) {
+  const director = status?.directorMode === 'demo' ? '固定演示（非 LLM）' : status?.directorMode === 'live' ? '真实模型已连接' : '未配置 API Key'
   return (
     <main className="page">
       <h1>设置</h1>
       <p>后台状态。创作时不需要打开这些。</p>
       <div className="settings-list">
-        <Setting label="对话导演" value={`${status?.model || 'MiniMax-M3'} · ${status?.m3 ? '已连接' : '未连接'}`} ok={status?.m3} />
-        <Setting label="云端成片额度" value={`今日 ${status?.quota.used ?? 0}/${status?.quota.total ?? 3}`} ok={Boolean(status?.quota.total)} />
-        <Setting label="本机生成" value={status?.comfy ? '已就绪' : '未启动'} ok={status?.comfy} />
-        <Setting label="本机模型" value={status?.models?.ready ? '已就绪' : '不完整'} ok={status?.models?.ready} />
+        <Setting label="对话导演" value={`${status?.model || 'MiniMax-M3'} · ${director}`} ok={status?.directorMode === 'live'} />
+        <Setting label="云端成片额度" value={status?.quota.total ? `今日 ${status.quota.used}/${status.quota.total}` : '未连接'} ok={Boolean(status?.quota.total)} />
+        <Setting label="本机生成" value={status?.videoDemo ? '模拟模式（不执行推理）' : status?.comfy ? '已就绪' : '未启动'} ok={status?.comfy && !status?.videoDemo} />
+        <Setting label="本机模型" value={status?.models?.simulated ? '模拟模式（未核验）' : status?.models?.ready ? '已就绪' : '不完整'} ok={Boolean(status?.models?.ready && !status?.models?.simulated)} />
       </div>
     </main>
   )
