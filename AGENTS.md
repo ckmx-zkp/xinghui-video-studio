@@ -32,6 +32,7 @@ The project phase is server-owned:
 - Brief confirmation, concept selection, storyboard confirmation, quality approval, generation, and delivery approval use separate server endpoints.
 - Returning for revision must invalidate downstream approval state without deleting source assets.
 - Existing `project.json` files must be normalized on load so schema additions remain backward compatible.
+- Images attached in the composer must be persisted as project assets and included in the current MiniMax user turn as multimodal `image_url` content. Never imply that the director saw an image when only its filename or upload state was available.
 
 ## Director response contract
 
