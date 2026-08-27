@@ -529,6 +529,7 @@ function WorkflowPanel({ project, busy, onAction }: {
     return (
       <section className="workflow-panel">
         <div className="workflow-title"><LoaderCircle className={processing ? 'spin' : ''} />镜头生成中</div>
+        <GenerationProgress shots={project.shots} />
         <p>{processing ? `${processing} 个任务正在处理` : failed ? `${failed} 个镜头生成失败` : pending.length ? `${pending.length} 个镜头等待继续生成` : '正在整理成片'}</p>
         {pending.length > 0 && <button className="workflow-primary" disabled={busy} onClick={() => onAction('generate', project.engine === 'cloud' ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}><RefreshCw />{failed ? '重试失败镜头' : '继续生成未完成镜头'}</button>}
         {project.finalError && <p className="workflow-error">{project.finalError}</p>}
@@ -552,6 +553,30 @@ function WorkflowPanel({ project, busy, onAction }: {
       <div className="workflow-title"><Check />项目已完成</div>
       <p>{project.title}</p>
     </section>
+  )
+}
+
+function GenerationProgress({ shots }: { shots: Shot[] }) {
+  const total = Math.max(1, shots.length)
+  const complete = shots.filter((shot) => shot.status === 'Success').length
+  const active = shots.find((shot) => shot.status === 'Processing')
+  const waiting = shots.filter((shot) => shot.status === 'Queueing').length
+  const percent = Math.round((complete / total) * 100)
+  const currentText = active
+    ? `正在生成 S${active.index + 1} · ${active.title.replace(/^镜头\d+\s*·\s*/, '')}`
+    : waiting ? `${waiting} 镜正在排队` : complete === total ? '镜头已完成，正在合成成片' : '正在同步生成状态'
+  return (
+    <div className="generation-progress" aria-live="polite">
+      <div className="generation-progress-head"><b>完成进度</b><span>{complete}/{shots.length} 镜 · {percent}%</span></div>
+      <div className="generation-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={complete} aria-label="镜头完成进度">
+        <div className="generation-progress-fill" style={{ width: `${percent}%` }} />
+        {active && <div className="generation-progress-active" />}
+      </div>
+      <small>{currentText}</small>
+      <div className="generation-progress-shots">
+        {shots.map((shot) => <span key={shot.id} className={shot.status === 'Success' ? 'done' : shot.status === 'Processing' ? 'active' : shot.status === 'Fail' ? 'fail' : ''}>S{shot.index + 1}</span>)}
+      </div>
+    </div>
   )
 }
 
