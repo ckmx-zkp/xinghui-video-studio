@@ -1,0 +1,21 @@
+video-studio/src/App.tsx
+  s_b4eca118e90dc6::t_f1c7b7973b89d3 95-103,315,318
+video-studio/src/App.css
+  s_b4eca118e90dc6::t_f1c7b7973b89d3 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "b8989ca6d1db71e2a2fcec247e50826beea5bfa8",
+  "prompts": {},
+  "sessions": {
+    "s_b4eca118e90dc6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0413c-7e86-7172-ac56-2e78ad64ea24",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kunpeng2.zhang <kunpeng2.zhang@ly.com>"
+    }
+  }
+}
