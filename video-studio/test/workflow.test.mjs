@@ -4,7 +4,7 @@ import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { briefReadiness, completionText, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
-import { app, historyForDirector, resolveRuntimeModes } from '../server.mjs'
+import { app, historyForDirector, isAdvanceIntent, resolveRuntimeModes } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
@@ -103,6 +103,15 @@ describe('runtime mode isolation', () => {
       directorDemoMode: true,
       videoDemoMode: false,
     })
+  })
+})
+
+describe('natural-language planning confirmations', () => {
+  it('recognizes short Chinese confirmations without treating creative detail as a no-op', () => {
+    for (const text of ['好', '确认', '继续', '直接开始', '开始制作视频！']) assert.equal(isAdvanceIntent(text), true)
+    assert.equal(isAdvanceIntent('小狗在推车里开心玩耍，儿童奶音，然后开始制作'), true)
+    assert.equal(isAdvanceIntent('把小狗换成黑色'), false)
+    assert.equal(isAdvanceIntent('小狗从家里开始跑'), false)
   })
 })
 

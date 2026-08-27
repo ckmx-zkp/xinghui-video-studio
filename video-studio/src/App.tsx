@@ -451,7 +451,8 @@ function WorkflowPanel({ project, busy, onAction }: {
           <div><dt>创作方法</dt><dd>{skillLabel[project.skill] || '自定义流程'}</dd></div>
           <div><dt>成片规格</dt><dd>{project.aspect} · {project.duration} 秒 · {project.engine === 'cloud' ? '云端成片' : '本机草稿'}</dd></div>
         </dl>
-        <button className="workflow-primary" disabled={busy} onClick={() => onAction('confirm-brief')}><Lightbulb />确认简报，生成创意方向</button>
+        <p className="workflow-hint">也可以在聊天框直接说“确认”或“继续”。</p>
+        <button className="workflow-primary" disabled={busy} onClick={() => onAction('confirm-brief')}><Lightbulb />确认并继续</button>
       </section>
     )
   }
@@ -475,6 +476,7 @@ function WorkflowPanel({ project, busy, onAction }: {
           <button disabled={busy} onClick={() => onAction('revise-brief')}><ArrowLeft />修改简报</button>
           <button disabled={busy} onClick={() => onAction('regenerate-concepts')}><RefreshCw />换一组</button>
         </div>
+        <p className="workflow-hint">想少做选择？在聊天框说“继续”，将自动采用推荐方向。</p>
       </section>
     )
   }
@@ -485,7 +487,7 @@ function WorkflowPanel({ project, busy, onAction }: {
         <div className="workflow-title"><Film />分镜评审</div>
         <p>{project.stageInsight || `共 ${project.shots.length} 镜，${project.duration} 秒`}</p>
         {Boolean(project.stageChoices?.length) && <div className="stage-choices">{project.stageChoices?.map((choice) => <button key={choice.id} disabled={busy} onClick={() => onAction('chat', { message: choice.reply })}><b>{choice.label}</b><small>{choice.description}</small></button>)}</div>}
-        <button className="workflow-primary" disabled={busy || !project.shots.length} onClick={() => onAction('confirm-storyboard')}><Check />确认分镜</button>
+        <button className="workflow-primary" disabled={busy || !project.shots.length} onClick={() => onAction('confirm-storyboard')}><Check />确认并继续</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('reselect-concept')}><ArrowLeft />重新选择方向</button>
       </section>
     )

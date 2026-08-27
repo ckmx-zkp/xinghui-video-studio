@@ -41,6 +41,19 @@ const BRIEF_KEYS = ['goal', 'audience', 'platform', 'story', 'subject', 'visualS
 const PROJECT_PHASES = new Set(['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate', 'generating', 'delivery_review', 'delivered'])
 const SKILLS = new Set(['narrative-film', 'product-ad', 'social-koc', 'knowledge-video', 'custom-video'])
 
+// Natural-language confirmations are deliberately conservative. They advance
+// planning review gates, never the final video-generation gate.
+export function isAdvanceIntent(value) {
+  const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
+  return /(?:确认|继续|下一步|开拍|开干|直接开始|开始制作(?:视频)?|直接制作|直接做|开始生成|开始做|开始吧|做吧|生成吧)$/u.test(text)
+    || /^(?:好|好的|可以|行|没问题|就这样|就按这个)$/u.test(text)
+}
+
+function isShortAdvanceIntent(value) {
+  const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
+  return /^(?:好|好的|可以|行|没问题|就这样|就按这个|确认|继续|下一步|开拍|开干|直接开始|开始制作|直接制作|直接做|开始生成|开始做|开始吧|做吧|生成吧)$/u.test(text)
+}
+
 function projectOr404(id) {
   const project = store.load(id)
   if (!project) {
@@ -710,7 +723,53 @@ async function applyActions(project, actions, notes) {
       notes.push(`已改第 ${action.shot} 镜`)
     }
   }
+  // The model is allowed to recommend presenting the brief, but it must not be
+  // able to keep a complete brief in an endless interview by omitting that one
+  // action. The server owns the phase transition.
+  if (project.phase === 'discovery' && briefReadiness(project).ready) {
+    project.phase = 'brief_review'
+    notes.push('创作简报已整理好，可确认进入创意方向')
+  }
   return project
+}
+
+async function confirmBriefProject(project) {
+  if (project.phase !== 'brief_review') throw new Error('当前不在创作简报评审阶段')
+  const readiness = briefReadiness(project)
+  if (!readiness.ready) throw new Error(`简报信息仍不完整：${readiness.missing.join('、')}`)
+  await makeConcepts(project)
+  project.briefConfirmedAt = new Date().toISOString()
+  project.phase = 'concept_selection'
+  return project
+}
+
+async function advancePlanningFromChat(project) {
+  if (project.phase === 'brief_review') {
+    await confirmBriefProject(project)
+    return '已确认简报，并生成了 3 个创意方向。你可以直接说“继续”，我会采用推荐方向并生成分镜；也可以在右侧挑一个方向。'
+  }
+  if (project.phase === 'concept_selection') {
+    const recommended = project.concepts?.[0]
+    if (!recommended) throw new Error('暂时没有可选的创意方向')
+    project.selectedConceptId = recommended.id
+    await makeStoryboard(project)
+    project.phase = 'storyboard_review'
+    project.storyboardConfirmedAt = ''
+    return `已采用推荐方向「${recommended.title}」并生成分镜。你可以直接说“继续”进入质量检查，或在右侧调整方向。`
+  }
+  if (project.phase === 'storyboard_review') {
+    if (!project.shots?.length) throw new Error('还没有可确认的分镜')
+    await reviewStoryboard(project)
+    project.phase = 'quality_review'
+    project.storyboardConfirmedAt = new Date().toISOString()
+    return '分镜已确认，正在展示质量检查结果。检查通过后，你再说“继续”即可准备开拍。'
+  }
+  if (project.phase === 'quality_review') {
+    if (project.qualityReview?.verdict !== 'pass') return '质量检查建议先修改分镜；我没有替你跳过这一步。你可以说“修改第几镜 + 怎么改”。'
+    project.phase = 'ready_to_generate'
+    return '质量检查已通过，已准备开拍。请点击右侧“开始本机生成”；云端项目会先明确显示将消耗的额度。'
+  }
+  return ''
 }
 
 async function reviewStoryboard(project) {
@@ -825,15 +884,10 @@ app.post('/api/projects/:id/use-asset', (req, res) => {
 app.post('/api/projects/:id/confirm-brief', async (req, res) => {
   try {
     const project = projectOr404(req.params.id)
-    if (project.phase !== 'brief_review') return res.status(409).json({ error: '当前不在创作简报评审阶段' })
-    const readiness = briefReadiness(project)
-    if (!readiness.ready) return res.status(409).json({ error: `简报信息仍不完整：${readiness.missing.join('、')}` })
-    await makeConcepts(project)
-    project.briefConfirmedAt = new Date().toISOString()
-    project.phase = 'concept_selection'
+    await confirmBriefProject(project)
     store.save(project)
     res.json(project)
-  } catch (error) { res.status(error.status || 502).json({ error: error.message }) }
+  } catch (error) { res.status(error.status || (error.message.includes('当前不在') || error.message.includes('信息仍不完整') ? 409 : 502)).json({ error: error.message }) }
 })
 
 app.post('/api/projects/:id/revise-brief', (req, res) => {
@@ -1069,6 +1123,19 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     }
     store.save(project)
     userTurnPersisted = true
+
+    // A short confirmation should never be sent back through the interview
+    // model. It is a command for the current planning gate, not new creative
+    // input. This also makes “好/继续/开始制作” usable on mobile.
+    if (isShortAdvanceIntent(text) && project.phase !== 'discovery') {
+      const say = await advancePlanningFromChat(project)
+      if (!say) throw new Error('当前阶段不需要继续确认')
+      project.messages.push({ role: 'assistant', content: say, insight: '', choices: [], ts: new Date().toISOString() })
+      store.save(project)
+      userTurnPersisted = false
+      return res.json(project)
+    }
+
     const history = historyForDirector(project.messages, attachmentFiles.map((filename) => store.imageDataUrl(project.id, filename)))
     const parsed = await completeDirectorTurn(project, history)
     const notes = []
@@ -1077,7 +1144,13 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     } catch (actionError) {
       notes.push(actionError.message)
     }
-    const reply = [parsed.say, notes.length ? notes.join('。') + '。' : ''].filter(Boolean).join('\n')
+    let reply = [parsed.say, notes.length ? notes.join('。') + '。' : ''].filter(Boolean).join('\n')
+    // A detailed message can both revise the brief and say “直接开始”. Let the
+    // director first apply the factual revision, then advance exactly one gate.
+    if (isAdvanceIntent(text) && project.phase === 'brief_review') {
+      const advanced = await advancePlanningFromChat(project)
+      if (advanced) reply = advanced
+    }
     project.messages.push({ role: 'assistant', content: reply, insight: parsed.insight, choices: parsed.choices, ts: new Date().toISOString() })
     store.save(project)
     userTurnPersisted = false
