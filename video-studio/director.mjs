@@ -1,3 +1,5 @@
+import { jsonrepair } from 'jsonrepair'
+
 const BRIEF_LABELS = {
   goal: '创作目标',
   audience: '目标受众',
@@ -58,11 +60,18 @@ actions 可选：
 }
 
 export function extractJson(raw) {
+  if (raw && typeof raw === 'object') return raw
   const cleaned = String(raw || '').replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```json|```/g, '').trim()
   const start = cleaned.indexOf('{')
   const end = cleaned.lastIndexOf('}')
-  if (start < 0 || end < start) throw new Error('导演未返回有效 JSON')
-  return JSON.parse(cleaned.slice(start, end + 1))
+  if (start < 0) throw new Error('导演未返回有效 JSON')
+  const candidate = end >= start ? cleaned.slice(start, end + 1) : cleaned.slice(start)
+  try {
+    return JSON.parse(candidate)
+  } catch {
+    try { return JSON.parse(jsonrepair(candidate)) }
+    catch { throw new Error('导演未返回有效 JSON') }
+  }
 }
 
 export function snapshotForDirector(project) {

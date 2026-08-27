@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { briefReadiness, parseDirectorReply, resolveShotList } from '../director.mjs'
+import { briefReadiness, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
 import { app, historyForDirector, resolveRuntimeModes } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -64,6 +64,12 @@ describe('director workflow contract', () => {
     assert.match(parsed.insight, /通勤噪声/)
     assert.equal(parsed.choices.length, 2)
     assert.equal(parsed.choices[1].reply, '选择视觉隐喻方向')
+  })
+
+  it('repairs common near-JSON output from the director model', () => {
+    const parsed = extractJson('{"say":"继续","insight":"画面成立","choices":[{"label":"方向A","reply":"选择A"},{"label":"方向B","reply":"选择B"}],')
+    assert.equal(parsed.say, '继续')
+    assert.equal(parsed.choices.length, 2)
   })
 
   it('resolves only pending or explicitly selected shots', () => {

@@ -977,6 +977,7 @@ async function completeDirectorTurn(project, history) {
       model: textModel,
       temperature: retry ? 0.15 : 0.3,
       max_tokens: retry ? 10000 : 8000,
+      response_format: { type: 'json_object' },
       messages: [
         ...baseMessages,
         ...(retry ? [{ role: 'system', content: '上一次输出被截断。请缩短思考并只返回完整、可解析的 JSON 对象。' }] : []),
@@ -985,21 +986,33 @@ async function completeDirectorTurn(project, history) {
     }),
   })
 
+  const parseComplete = (raw) => {
+    const value = extractJson(raw)
+    const choices = Array.isArray(value.choices) ? value.choices.filter((item) => item?.label && (item?.reply || item?.label)) : []
+    if (!String(value.say || value.message || '').trim() || !String(value.insight || '').trim() || choices.length < 2) {
+      throw new Error('导演回复结构不完整')
+    }
+    return parseDirectorReply(JSON.stringify(value))
+  }
+
   let data = await request(false)
   let raw = data.choices?.[0]?.message?.content || ''
   try {
-    extractJson(raw)
+    return parseComplete(raw)
   } catch {
     data = await request(true)
     raw = data.choices?.[0]?.message?.content || ''
-    extractJson(raw)
+    return parseComplete(raw)
   }
-  return parseDirectorReply(raw)
 }
 
 app.post('/api/projects/:id/chat', async (req, res) => {
+  let project
+  let rollbackProject
+  let userTurnPersisted = false
   try {
-    const project = projectOr404(req.params.id)
+    project = projectOr404(req.params.id)
+    rollbackProject = structuredClone(project)
     if (!PROJECT_PHASES.has(project.phase)) project.phase = 'discovery'
     const text = String(req.body.message || '').trim()
     const image = req.body.image
@@ -1034,6 +1047,8 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       project.idea = text
       project.creativeBrief.goal = text
     }
+    store.save(project)
+    userTurnPersisted = true
     const history = historyForDirector(project.messages, attachmentFiles.map((filename) => store.imageDataUrl(project.id, filename)))
     const parsed = await completeDirectorTurn(project, history)
     const notes = []
@@ -1045,8 +1060,12 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     const reply = [parsed.say, notes.length ? notes.join('。') + '。' : ''].filter(Boolean).join('\n')
     project.messages.push({ role: 'assistant', content: reply, insight: parsed.insight, choices: parsed.choices, ts: new Date().toISOString() })
     store.save(project)
+    userTurnPersisted = false
     res.json(project)
-  } catch (error) { res.status(error.status || 502).json({ error: error.message }) }
+  } catch (error) {
+    if (userTurnPersisted && rollbackProject) store.save(rollbackProject)
+    res.status(error.status || 502).json({ error: error.message })
+  }
 })
 
 app.get('/api/local/open', (_req, res) => res.json({ url: comfyUrl, workflow: 'MiniMax_H3_FL2V_GGUF' }))

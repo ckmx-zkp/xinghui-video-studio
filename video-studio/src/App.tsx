@@ -15,7 +15,7 @@ type Shot = {
 }
 type DirectorChoice = { id: string; label: string; description: string; reply: string }
 type Attachment = { id: string; filename: string; type: 'image'; mime?: string; size?: number; url: string }
-type Message = { role: 'user' | 'assistant'; content: string; attachments?: Attachment[]; insight?: string; choices?: DirectorChoice[]; ts?: string }
+type Message = { id?: string; role: 'user' | 'assistant'; content: string; attachments?: Attachment[]; insight?: string; choices?: DirectorChoice[]; ts?: string }
 type UploadResult = { attachment: Attachment; project: Project }
 type CreativeBrief = {
   goal: string
@@ -156,26 +156,42 @@ function App() {
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' })
-  }, [project?.messages?.length])
+  }, [project?.messages?.length, busy])
 
   const send = async (override?: string) => {
     if (!project || busy) return
     if (uploadingImage) return setError('照片仍在上传，请等待缩略图显示后再发送')
     const text = override?.trim() || draft.trim()
-    if (!text && !pendingAttachment) return
+    if (!text && !pendingAttachment) return setError('请输入内容或添加参考图')
+    const projectId = project.id
     const submittedDraft = draft
+    const submittedAttachment = pendingAttachment
+    const submittedContent = text || '请分析这张参考图，并结合图片继续创作访谈。'
+    const optimisticId = `pending-${crypto.randomUUID()}`
     setBusy(true)
     setError('')
     setDraft('')
+    setPendingAttachment(null)
+    setProject((current) => current?.id === projectId ? {
+      ...current,
+      messages: [...current.messages, {
+        id: optimisticId,
+        role: 'user',
+        content: submittedContent,
+        attachments: submittedAttachment ? [submittedAttachment] : [],
+        ts: new Date().toISOString(),
+      }],
+    } : current)
     try {
-      const next = await api<Project>(`/api/projects/${project.id}/chat`, {
+      const next = await api<Project>(`/api/projects/${projectId}/chat`, {
         method: 'POST',
-        body: JSON.stringify({ message: text, attachmentIds: pendingAttachment ? [pendingAttachment.id] : [] }),
+        body: JSON.stringify({ message: text, attachmentIds: submittedAttachment ? [submittedAttachment.id] : [] }),
       })
-      setPendingAttachment(null)
-      setProject(next)
+      setProject((current) => current?.id === projectId ? next : current)
       refreshStatus().catch(() => {})
     } catch (item) {
+      setProject((current) => current?.id === projectId ? { ...current, messages: current.messages.filter((message) => message.id !== optimisticId) } : current)
+      if (submittedAttachment) setPendingAttachment((current) => current || submittedAttachment)
       if (!override) setDraft((current) => current || submittedDraft)
       setError(item instanceof Error ? item.message : '对话失败')
     } finally {
@@ -299,10 +315,10 @@ function App() {
                   )}
                 </div>
               ))}
-              {busy && <div className="bubble assistant muted"><LoaderCircle className="spin" />导演正在想下一步…</div>}
+              {busy && <div className="bubble assistant muted" role="status" aria-live="polite"><LoaderCircle className="spin" />导演正在想下一步…</div>}
             </div>
             {error && <div className="error"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
-            <form className={`chat-input ${draggingImage ? 'is-dragging' : ''}`} onSubmit={(event) => { event.preventDefault(); send() }} onDragOver={(event) => {
+            <form className={`chat-input ${draggingImage ? 'is-dragging' : ''} ${busy ? 'is-busy' : ''}`} onSubmit={(event) => { event.preventDefault(); send() }} onDragOver={(event) => {
               event.preventDefault()
               if (event.dataTransfer.types.includes('Files')) setDraggingImage(true)
             }} onDragLeave={() => setDraggingImage(false)} onDrop={(event) => {
@@ -314,7 +330,7 @@ function App() {
             }}>
               <div className={`chat-field ${pendingAttachment ? 'has-attachment' : ''}`}>
                 {pendingAttachment && <div className="pending-attachment"><img src={pendingAttachment.url} alt="待发送参考图" /><button type="button" aria-label="移除待发送参考图" title="移除图片" onClick={() => setPendingAttachment(null)}><X /></button></div>}
-                <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="描述需求或粘贴参考图" rows={2} onPaste={(event) => {
+                <textarea value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} placeholder="描述需求或粘贴参考图" rows={2} onPaste={(event) => {
                   const file = imageFromClipboard(event.clipboardData)
                   if (!file) return
                   event.preventDefault()
@@ -322,8 +338,8 @@ function App() {
                 }} onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() }
                 }} />
-                <label className={`chat-image-button ${uploadingImage ? 'uploading' : ''}`} title={uploadingImage ? '图片上传中' : '添加参考图'}>
-                  <input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploadingImage} onChange={(event) => {
+                <label className={`chat-image-button ${uploadingImage ? 'uploading' : ''} ${busy ? 'disabled' : ''}`} title={busy ? '正在发送' : uploadingImage ? '图片上传中' : '添加参考图'}>
+                  <input type="file" accept="image/jpeg,image/png,image/webp" disabled={busy || uploadingImage} onChange={(event) => {
                     const file = event.currentTarget.files?.[0]
                     event.currentTarget.value = ''
                     selectReferenceImage(file)
@@ -332,7 +348,9 @@ function App() {
                 </label>
                 {draggingImage && <div className="drop-hint">松开添加图片</div>}
               </div>
-              <button className="primary" type="submit" disabled={busy || uploadingImage}><Send size={18} />{uploadingImage ? '上传中' : '发送'}</button>
+              <button className="primary" type="submit" disabled={busy || uploadingImage} aria-busy={busy || uploadingImage}>
+                {busy ? <><LoaderCircle className="spin" size={18} />发送中</> : uploadingImage ? <><LoaderCircle className="spin" size={18} />上传中</> : <><Send size={18} />发送</>}
+              </button>
             </form>
             <section className="preview compact">
               <div className="section-head">
