@@ -20,6 +20,11 @@ const apiHost = process.env.MINIMAX_API_HOST || 'https://api.minimaxi.com'
 const apiKey = process.env.MINIMAX_API_KEY || ''
 const textModel = process.env.MINIMAX_TEXT_MODEL || 'MiniMax-M3'
 const comfyUrl = process.env.COMFY_URL || 'http://127.0.0.1:8188'
+const comfyWsUrl = `${comfyUrl.replace(/^http/i, 'ws')}/ws?clientId=xinghui-studio`
+const comfyProgressByTask = new Map()
+let currentComfyExecution = null
+let comfySocket = null
+let comfyReconnectTimer = null
 // Keep dialogue and rendering modes independent: a machine without a GPU can
 // still use the real director model while only simulating local video output.
 export function resolveRuntimeModes(env = process.env) {
@@ -368,6 +373,93 @@ function resolveComfyFile(file) {
   return path.join(comfyRoot, kind, file.subfolder || '', file.filename)
 }
 
+// H3's sampler does not consistently publish a step counter on AMD/Windows.
+// Keep the range explicit: this is a stage estimate, never a fake percentage.
+export function comfyStageForNode(node) {
+  const number = Number(node)
+  if (!Number.isFinite(number)) return { key: 'working', label: '正在执行工作流', min: 0, max: 99 }
+  if (number <= 5) return { key: 'loading', label: '加载模型与编码提示词', min: 1, max: 9 }
+  if (number <= 11) return { key: 'prepare', label: '准备采样参数', min: 9, max: 12 }
+  if (number === 12) return { key: 'sampling', label: '采样生成视频帧', min: 12, max: 85 }
+  if (number <= 14) return { key: 'decode', label: '解码视频与音频', min: 85, max: 96 }
+  if (number <= 16) return { key: 'saving', label: '封装并保存成片', min: 96, max: 99 }
+  return { key: 'working', label: '正在完成工作流', min: 0, max: 99 }
+}
+
+function recordComfyEvent(message) {
+  const data = message?.data || {}
+  const taskId = data.prompt_id || data.promptId
+  if (message?.type === 'executing') {
+    if (data.node === null) currentComfyExecution = null
+    else if (data.node !== undefined) {
+      const progress = { node: String(data.node), updatedAt: new Date().toISOString() }
+      currentComfyExecution = { ...progress, taskId }
+      if (taskId) comfyProgressByTask.set(taskId, progress)
+    }
+    return
+  }
+  if (message?.type === 'progress') {
+    const progress = {
+      node: data.node === undefined ? undefined : String(data.node),
+      value: Number(data.value),
+      max: Number(data.max),
+      updatedAt: new Date().toISOString(),
+    }
+    currentComfyExecution = { ...currentComfyExecution, ...progress, taskId: taskId || currentComfyExecution?.taskId }
+    if (taskId) comfyProgressByTask.set(taskId, progress)
+    return
+  }
+  if (['execution_success', 'execution_error', 'execution_interrupted'].includes(message?.type) && taskId) {
+    comfyProgressByTask.delete(taskId)
+    if (currentComfyExecution?.taskId === taskId) currentComfyExecution = null
+  }
+}
+
+function scheduleComfyReconnect() {
+  if (videoDemoMode || comfyReconnectTimer) return
+  comfyReconnectTimer = setTimeout(() => {
+    comfyReconnectTimer = null
+    startComfyProgressFeed()
+  }, 5000)
+  comfyReconnectTimer.unref?.()
+}
+
+function startComfyProgressFeed() {
+  if (videoDemoMode || (comfySocket && comfySocket.readyState < 2) || typeof WebSocket !== 'function') return
+  try {
+    comfySocket = new WebSocket(comfyWsUrl)
+    comfySocket.addEventListener('message', (event) => {
+      try { recordComfyEvent(JSON.parse(String(event.data))) } catch { /* Ignore non-JSON Comfy messages. */ }
+    })
+    comfySocket.addEventListener('close', () => {
+      comfySocket = null
+      scheduleComfyReconnect()
+    })
+    comfySocket.addEventListener('error', () => { /* close handler reconnects */ })
+  } catch {
+    comfySocket = null
+    scheduleComfyReconnect()
+  }
+}
+
+function liveProgressForShot(shot) {
+  if (shot.status !== 'Processing') return undefined
+  const live = comfyProgressByTask.get(shot.taskId) || currentComfyExecution
+  if (!live) return { ...comfyStageForNode(undefined), estimated: true }
+  const stage = comfyStageForNode(live.node)
+  if (Number.isFinite(live.value) && Number.isFinite(live.max) && live.max > 0) {
+    return { ...stage, value: Math.max(0, live.value), max: live.max, exact: true, updatedAt: live.updatedAt }
+  }
+  return { ...stage, estimated: true, updatedAt: live.updatedAt }
+}
+
+function decorateProjectProgress(project) {
+  return {
+    ...project,
+    shots: (project.shots || []).map((shot) => ({ ...shot, generationProgress: liveProgressForShot(shot) })),
+  }
+}
+
 async function harvestLocalTask(task) {
   const history = await comfyJson(`/history/${encodeURIComponent(task.id)}`)
   const entry = history?.[task.id]
@@ -692,18 +784,24 @@ async function refreshProject(project) {
     }
   }
   if (changed) store.save(project)
-  return project
+  return decorateProjectProgress(project)
 }
 
 async function applyActions(project, actions, notes) {
   for (const action of actions || []) {
     const op = action.op || action.type
     if (op === 'update_brief') {
-      if (!['discovery', 'brief_review'].includes(project.phase)) {
-        notes.push('当前阶段不能修改创作简报，请先返回简报评审')
+      if (['generating', 'delivery_review', 'delivered'].includes(project.phase)) {
+        notes.push('成片已经在进行或完成，简报改动已记下，但不会打断当前出片')
+        applyBriefPatch(project, action)
+        continue
+      }
+      if (!['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate'].includes(project.phase)) {
+        notes.push('当前阶段不能修改创作简报')
         continue
       }
       applyBriefPatch(project, action)
+      notes.push('已记下简报修改。这一关即使完整，也还可以继续对话调整')
     } else if (op === 'present_brief') {
       if (project.phase !== 'discovery') continue
       const readiness = briefReadiness(project)
@@ -721,12 +819,18 @@ async function applyActions(project, actions, notes) {
       await makeConcepts(project)
       notes.push('已换了一组创意方向')
     } else if (op === 'rewrite_shot') {
-      if (project.phase !== 'storyboard_review') {
-        notes.push('请先选择创意方向并进入分镜评审')
+      if (!['storyboard_review', 'quality_review', 'ready_to_generate'].includes(project.phase)) {
+        notes.push('当前没有可改的分镜，生成开始后请等本镜完成再返修')
         continue
       }
       await rewriteShot(project, Number(action.shot || action.index), action.instruction || '')
-      notes.push(`已改第 ${action.shot} 镜`)
+      if (project.phase !== 'storyboard_review') {
+        project.phase = 'storyboard_review'
+        project.storyboardConfirmedAt = ''
+        notes.push(`已改第 ${action.shot} 镜，请再确认分镜`)
+      } else {
+        notes.push(`已改第 ${action.shot} 镜`)
+      }
     }
   }
   // The model is allowed to recommend presenting the brief, but it must not be
@@ -1198,11 +1302,12 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       const say = directStart
         ? await directStartFromChat(project)
         : await advancePlanningFromChat(project)
-      if (!say) throw new Error('当前阶段不需要继续确认')
-      project.messages.push({ role: 'assistant', content: say, insight: '', choices: [], ts: new Date().toISOString() })
-      store.save(project)
-      userTurnPersisted = false
-      return res.json(project)
+      if (say) {
+        project.messages.push({ role: 'assistant', content: say, insight: '', choices: [], ts: new Date().toISOString() })
+        store.save(project)
+        userTurnPersisted = false
+        return res.json(project)
+      }
     }
 
     const history = historyForDirector(project.messages, attachmentFiles.map((filename) => store.imageDataUrl(project.id, filename)))
@@ -1253,6 +1358,7 @@ let serverInstance
 export function startServer() {
   if (serverInstance) return serverInstance
   serverInstance = app.listen(port, '127.0.0.1', () => console.log(`星绘视频工坊: http://127.0.0.1:${port}`))
+  startComfyProgressFeed()
   return serverInstance
 }
 

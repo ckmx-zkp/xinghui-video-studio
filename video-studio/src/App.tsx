@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, ChevronRight, CircleAlert, Cloud, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Play, Plus, RefreshCw, Send, Settings, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, CircleAlert, ClipboardCheck, Cloud, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Play, Plus, RefreshCw, Send, Settings, Sparkles, X } from 'lucide-react'
 import './App.css'
 
 type Shot = {
@@ -12,6 +12,15 @@ type Shot = {
   taskId?: string
   filename?: string
   imageFile?: string
+  generationProgress?: {
+    key: string
+    label: string
+    min: number
+    max: number
+    value?: number
+    exact?: boolean
+    estimated?: boolean
+  }
 }
 type DirectorChoice = { id: string; label: string; description: string; reply: string }
 type Attachment = { id: string; filename: string; type: 'image'; mime?: string; size?: number; url: string }
@@ -46,6 +55,23 @@ type QualityReview = {
   recommendations: string[]
 }
 type Asset = { id: string; projectId: string; projectTitle: string; filename: string; title: string; url: string; updatedAt: string }
+type ProcessStep = {
+  id: string
+  label: string
+  completeness: number
+  quality: number
+  status: 'todo' | 'active' | 'done'
+  current?: boolean
+  missing: string[]
+  canContinue: boolean
+  note: string
+}
+type ProcessProgress = {
+  overallCompleteness: number
+  overallQuality: number
+  currentId: string
+  steps: ProcessStep[]
+}
 type Project = {
   id: string
   title: string
@@ -61,6 +87,7 @@ type Project = {
   productionPlan: ProductionTask[]
   referenceImages: string[]
   qualityReview?: QualityReview | null
+  processProgress?: ProcessProgress
   stageInsight?: string
   stageChoices?: DirectorChoice[]
   selectedConceptId?: string
@@ -290,13 +317,14 @@ function App() {
           <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}><ImagePlus />素材</button>
           <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Settings />设置</button>
         </nav>
-        <div className="sidebar-note">直接说话即可<br />说“直接开始”由导演自动完成并开拍</div>
+        <div className="sidebar-note">直接说话即可<br />过程完整后仍可继续改<br />说“直接开始”会按默认值推进</div>
       </aside>
 
       {view === 'create' && (
         <>
           <main className="workspace chat-workspace">
             <div className="chat-log" ref={logRef}>
+              {project?.processProgress && <ProcessStrip progress={project.processProgress} />}
               {messages.length === 0 && (
                 <>
                   <div className="bubble assistant">这次想做一支什么样的视频？先说一个大致想法，我会和你一起把故事、受众与画面方向梳理清楚。</div>
@@ -339,7 +367,7 @@ function App() {
             }}>
               <div className={`chat-field ${pendingAttachment ? 'has-attachment' : ''}`}>
                 {pendingAttachment && <div className="pending-attachment"><img src={pendingAttachment.url} alt="待发送参考图" /><button type="button" aria-label="移除待发送参考图" title="移除图片" onClick={() => setPendingAttachment(null)}><X /></button></div>}
-                <textarea value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} placeholder="描述需求或粘贴参考图" rows={2} onPaste={(event) => {
+                <textarea value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} placeholder={project?.processProgress?.steps.some((item) => item.completeness >= 100) ? '这一关已完整，仍可继续补充或修改' : '描述需求或粘贴参考图'} rows={2} onPaste={(event) => {
                   const file = imageFromClipboard(event.clipboardData)
                   if (!file) return
                   event.preventDefault()
@@ -376,9 +404,18 @@ function App() {
             <div className="rail-head">
               <div>
                 <h2>{project?.title || '制作计划'}</h2>
-                <p>{phaseLabel[project?.phase || 'discovery']} · {project?.aspect} · {project?.engine === 'cloud' ? '云端成片' : '本机草稿'}</p>
+                <p>
+                  {phaseLabel[project?.phase || 'discovery']} · {project?.aspect} · {project?.engine === 'cloud' ? '云端成片' : '本机草稿'}
+                  {project?.processProgress ? ` · 完整度 ${project.processProgress.overallCompleteness}%` : ''}
+                </p>
               </div>
+              {project?.processProgress && (
+                <span className={`score-chip ${project.processProgress.overallQuality >= 80 ? 'pass' : project.processProgress.overallQuality >= 60 ? 'revise' : ''}`}>
+                  {project.processProgress.overallQuality || project.qualityReview?.score || 0}
+                </span>
+              )}
             </div>
+            {project?.processProgress && <ProcessBoard progress={project.processProgress} />}
             {project && <WorkflowPanel project={project} busy={busy} onAction={runProjectAction} />}
             {project && project.productionPlan.length > 0 && <ProductionCanvas project={project} />}
             <div className="shots">
@@ -421,6 +458,53 @@ const briefRows: Array<[keyof CreativeBrief, string]> = [
   ['audio', '声音设计'],
   ['constraints', '边界要求'],
 ]
+
+function ProcessStrip({ progress }: { progress: ProcessProgress }) {
+  const current = progress.steps.find((item) => item.current) || progress.steps[0]
+  return (
+    <section className="process-strip" aria-label="制作完整度">
+      <div className="process-strip-head">
+        <b>完整度 {progress.overallCompleteness}%</b>
+        <span>过程质量 {progress.overallQuality || '—'}</span>
+      </div>
+      <div className="process-strip-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.overallCompleteness}>
+        <div style={{ width: `${progress.overallCompleteness}%` }} />
+      </div>
+      <div className="process-strip-steps">
+        {progress.steps.map((item) => (
+          <span key={item.id} className={`${item.status}${item.current ? ' current' : ''}`}>
+            {item.label}<em>{item.completeness}%</em>{item.quality > 0 ? <i>{item.quality}</i> : null}
+          </span>
+        ))}
+      </div>
+      <small>{current.completeness >= 100 ? `${current.label}已完整，仍可继续对话修改。` : current.missing[0] ? `${current.label}还缺：${current.missing.join('、')}` : `${current.label}进行中，说完即可往下走。`}</small>
+    </section>
+  )
+}
+
+function ProcessBoard({ progress }: { progress: ProcessProgress }) {
+  return (
+    <section className="workflow-panel process-board">
+      <div className="workflow-title"><ClipboardCheck />过程完整度 <span>质量 {progress.overallQuality || '—'}</span></div>
+      <div className="process-board-list">
+        {progress.steps.map((item) => (
+          <article key={item.id} className={`${item.status}${item.current ? ' current' : ''}`}>
+            <div>
+              <b>{item.label}</b>
+              <small>{item.note}</small>
+            </div>
+            <div className="process-board-meters">
+              <span>完整 {item.completeness}%</span>
+              <span className={item.quality >= 80 ? 'good' : item.quality >= 60 ? 'ok' : item.quality > 0 ? 'low' : ''}>质量 {item.quality || '—'}</span>
+            </div>
+            <div className="generation-progress-track" aria-hidden="true"><div className="generation-progress-fill" style={{ width: `${item.completeness}%` }} /></div>
+          </article>
+        ))}
+      </div>
+      <p className="workflow-hint">任何一关到 100% 都可以继续在对话里改，不会锁死。</p>
+    </section>
+  )
+}
 
 function WorkflowPanel({ project, busy, onAction }: {
   project: Project
@@ -494,17 +578,9 @@ function WorkflowPanel({ project, busy, onAction }: {
   }
 
   if (project.phase === 'quality_review') {
-    const review = project.qualityReview
     return (
       <section className="workflow-panel quality-panel">
-        <div className="workflow-title"><Check />制作质量审核 <span>{review?.score ?? 0} 分</span></div>
-        <p>{review?.summary}</p>
-        <div className="quality-checks">
-          {(review?.checks || []).map((check) => (
-            <div key={check.label} className={check.status}><i /> <span><b>{check.label}</b><small>{check.note}</small></span></div>
-          ))}
-        </div>
-        {(review?.recommendations || []).length > 0 && <ul>{review?.recommendations.map((item) => <li key={item}>{item}</li>)}</ul>}
+        <QualityReviewCard review={project.qualityReview} />
         <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-quality')}><Check />通过审核，准备开拍</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改分镜</button>
       </section>
@@ -517,6 +593,7 @@ function WorkflowPanel({ project, busy, onAction }: {
       <section className={`workflow-panel shoot-panel ${cloud ? 'cloud-shoot' : ''}`}>
         <div className="workflow-title"><Play />准备开拍</div>
         <p>{pending.length} 个镜头 · {cloud ? `将消耗 ${pending.length} 次云端额度` : '本机生成，不消耗云端额度'}</p>
+        {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
         <button className="workflow-primary" disabled={busy || !pending.length} onClick={() => onAction('generate', cloud ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}>
           <Play />{cloud ? `确认消耗 ${pending.length} 次并开拍` : '开始本机生成'}
         </button>
@@ -531,6 +608,7 @@ function WorkflowPanel({ project, busy, onAction }: {
         <div className="workflow-title"><LoaderCircle className={processing ? 'spin' : ''} />镜头生成中</div>
         <GenerationProgress shots={project.shots} />
         <p>{processing ? `${processing} 个任务正在处理` : failed ? `${failed} 个镜头生成失败` : pending.length ? `${pending.length} 个镜头等待继续生成` : '正在整理成片'}</p>
+        {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
         {pending.length > 0 && <button className="workflow-primary" disabled={busy} onClick={() => onAction('generate', project.engine === 'cloud' ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}><RefreshCw />{failed ? '重试失败镜头' : '继续生成未完成镜头'}</button>}
         {project.finalError && <p className="workflow-error">{project.finalError}</p>}
       </section>
@@ -542,6 +620,7 @@ function WorkflowPanel({ project, busy, onAction }: {
       <section className="workflow-panel delivery-panel">
         <div className="workflow-title"><Film />成片交付评审</div>
         <p>{project.title}</p>
+        {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
         <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-delivery')}><Check />确认交付</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改</button>
       </section>
@@ -552,7 +631,53 @@ function WorkflowPanel({ project, busy, onAction }: {
     <section className="workflow-panel completed-panel">
       <div className="workflow-title"><Check />项目已完成</div>
       <p>{project.title}</p>
+      {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
     </section>
+  )
+}
+
+function QualityReviewCard({ review, compact = false }: { review?: QualityReview | null; compact?: boolean }) {
+  const [open, setOpen] = useState(!compact)
+  if (!review) {
+    return (
+      <div className="quality-score-card empty">
+        <ClipboardCheck />
+        <div><b>尚未质检</b><small>确认分镜后会给出分数和修改建议</small></div>
+      </div>
+    )
+  }
+  const fails = review.checks.filter((item) => item.status === 'fail').length
+  const warns = review.checks.filter((item) => item.status === 'warning').length
+  const verdictText = review.verdict === 'pass' ? '可以开拍' : '建议先改分镜'
+  const counts = [
+    fails ? `${fails} 项不通过` : '',
+    warns ? `${warns} 项有风险` : '',
+    !fails && !warns ? '检查项全部通过' : '',
+  ].filter(Boolean).join(' · ')
+  return (
+    <div className={`quality-score-card ${review.verdict === 'pass' ? 'pass' : 'revise'}`}>
+      <button type="button" className="quality-score-head" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <b>{review.score}</b>
+        <span>
+          <strong>分镜质检 · {verdictText}</strong>
+          <small>{counts}</small>
+        </span>
+        <ChevronRight className={open ? 'open' : ''} />
+      </button>
+      {open && (
+        <div className="quality-score-body">
+          {review.summary && <p>{review.summary}</p>}
+          <div className="quality-checks">
+            {review.checks.map((check) => (
+              <div key={check.label} className={check.status}><i /> <span><b>{check.label}</b><small>{check.note}</small></span></div>
+            ))}
+          </div>
+          {(review.recommendations || []).length > 0 && (
+            <ul>{review.recommendations.map((item) => <li key={item}>{item}</li>)}</ul>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -561,18 +686,29 @@ function GenerationProgress({ shots }: { shots: Shot[] }) {
   const complete = shots.filter((shot) => shot.status === 'Success').length
   const active = shots.find((shot) => shot.status === 'Processing')
   const waiting = shots.filter((shot) => shot.status === 'Queueing').length
-  const percent = Math.round((complete / total) * 100)
+  const detail = active?.generationProgress
+  const exactShotPercent = detail?.exact && detail.max && detail.value !== undefined ? Math.round((detail.value / detail.max) * 100) : undefined
+  const exactSteps = detail?.exact && detail.value !== undefined && detail.max ? `${detail.value}/${detail.max}` : ''
+  const overallPercent = exactShotPercent === undefined ? Math.round((complete / total) * 100) : Math.round(((complete + exactShotPercent / 100) / total) * 100)
   const currentText = active
-    ? `正在生成 S${active.index + 1} · ${active.title.replace(/^镜头\d+\s*·\s*/, '')}`
+    ? exactShotPercent === undefined
+      ? `S${active.index + 1} · ${detail?.label || '正在连接 H3 工作流'}（阶段估算 ${detail?.min ?? 0}–${detail?.max ?? 99}%）`
+      : `S${active.index + 1} · ${detail?.label || '采样生成视频帧'} · ${exactSteps} 步（精确 ${exactShotPercent}%）`
     : waiting ? `${waiting} 镜正在排队` : complete === total ? '镜头已完成，正在合成成片' : '正在同步生成状态'
   return (
     <div className="generation-progress" aria-live="polite">
-      <div className="generation-progress-head"><b>完成进度</b><span>{complete}/{shots.length} 镜 · {percent}%</span></div>
-      <div className="generation-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={complete} aria-label="镜头完成进度">
-        <div className="generation-progress-fill" style={{ width: `${percent}%` }} />
+      <div className="generation-progress-head"><b>成片完成</b><span>{complete}/{shots.length} 镜 · {overallPercent}%</span></div>
+      <div className="generation-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={overallPercent} aria-label="视频生成总进度">
+        <div className="generation-progress-fill" style={{ width: `${overallPercent}%` }} />
         {active && <div className="generation-progress-active" />}
       </div>
       <small>{currentText}</small>
+      {active && <div className="generation-stage-list" aria-label="当前镜头阶段">
+        {['加载与编码', '采样生成', '解码封装'].map((stage, index) => {
+          const activeStage = detail?.key === 'loading' ? 0 : detail?.key === 'prepare' || detail?.key === 'sampling' ? 1 : 2
+          return <span key={stage} className={index < activeStage ? 'done' : index === activeStage ? 'active' : ''}>{stage}</span>
+        })}
+      </div>}
       <div className="generation-progress-shots">
         {shots.map((shot) => <span key={shot.id} className={shot.status === 'Success' ? 'done' : shot.status === 'Processing' ? 'active' : shot.status === 'Fail' ? 'fail' : ''}>S{shot.index + 1}</span>)}
       </div>

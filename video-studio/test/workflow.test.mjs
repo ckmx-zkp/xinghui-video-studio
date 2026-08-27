@@ -3,8 +3,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { briefReadiness, completionText, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
-import { app, applyDirectorDefaults, historyForDirector, isAdvanceIntent, isDirectStartIntent, resolveRuntimeModes } from '../server.mjs'
+import { briefReadiness, buildProcessProgress, completionText, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
+import { app, applyDirectorDefaults, comfyStageForNode, historyForDirector, isAdvanceIntent, isDirectStartIntent, resolveRuntimeModes } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
@@ -49,6 +49,44 @@ describe('director workflow contract', () => {
     const result = briefReadiness({ idea: '做一个耳机广告', discoveryTurns: 3, creativeBrief: completeBrief })
     assert.equal(result.ready, true)
     assert.deepEqual(result.missing, [])
+  })
+
+  it('exposes per-process completeness and quality without locking conversation', () => {
+    const empty = buildProcessProgress({ phase: 'discovery', discoveryTurns: 0, creativeBrief: {}, shots: [], concepts: [] })
+    assert.equal(empty.steps.length, 6)
+    assert.ok(empty.overallCompleteness < 40)
+    assert.equal(empty.steps[0].canContinue, true)
+    assert.match(empty.steps[0].missing.join(), /创作目标/)
+
+    const readyDiscovery = buildProcessProgress({
+      phase: 'brief_review',
+      discoveryTurns: 3,
+      creativeBrief: completeBrief,
+      shots: [],
+      concepts: [],
+    })
+    assert.equal(readyDiscovery.steps.find((item) => item.id === 'discovery')?.completeness, 100)
+    assert.match(readyDiscovery.steps.find((item) => item.id === 'discovery')?.note || '', /仍可继续/)
+
+    const scoredBoard = buildProcessProgress({
+      phase: 'generating',
+      discoveryTurns: 3,
+      briefConfirmedAt: '2026-08-28',
+      storyboardConfirmedAt: '2026-08-28',
+      selectedConceptId: 'c1',
+      creativeBrief: completeBrief,
+      concepts: [{ id: 'c1', title: '方向A', logline: '一句话故事成立', narrative: '有完整叙事方法', visualHook: '记忆点清晰', ending: '收束明确' }],
+      shots: [
+        { status: 'Success', video_prompt: 'a'.repeat(80) },
+        { status: 'Processing', video_prompt: 'b'.repeat(80) },
+        { status: 'Queueing', video_prompt: 'c'.repeat(80) },
+      ],
+      duration: 18,
+      qualityReview: { score: 58, verdict: 'revise', checks: [{ status: 'fail', label: '画幅' }] },
+    })
+    assert.equal(scoredBoard.steps.find((item) => item.id === 'storyboard')?.quality, 58)
+    assert.equal(scoredBoard.steps.find((item) => item.id === 'generate')?.current, true)
+    assert.ok((scoredBoard.steps.find((item) => item.id === 'generate')?.completeness || 0) < 100)
   })
 
   it('parses professional insight and selectable replies', () => {
@@ -103,6 +141,14 @@ describe('runtime mode isolation', () => {
       directorDemoMode: true,
       videoDemoMode: false,
     })
+  })
+})
+
+describe('ComfyUI progress semantics', () => {
+  it('shows sampler progress as an estimate range when ComfyUI has no step counter', () => {
+    assert.deepEqual(comfyStageForNode('12'), { key: 'sampling', label: '采样生成视频帧', min: 12, max: 85 })
+    assert.equal(comfyStageForNode('14').key, 'decode')
+    assert.equal(comfyStageForNode(undefined).key, 'working')
   })
 })
 

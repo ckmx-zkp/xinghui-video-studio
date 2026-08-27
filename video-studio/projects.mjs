@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { buildProcessProgress } from './director.mjs'
 
 export function createProjectStore(root) {
   const projectsDir = path.join(root, 'outputs', 'projects')
@@ -68,6 +69,7 @@ export function createProjectStore(root) {
       })),
     }
     if (!next.creativeBrief.goal && next.idea) next.creativeBrief.goal = next.idea
+    next.processProgress = buildProcessProgress(next)
     return next
   }
 

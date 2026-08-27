@@ -18,13 +18,155 @@ export function briefReadiness(project) {
   return { ready: missing.length === 0 && turnsRemaining === 0, missing, turnsRemaining, minimumTurns }
 }
 
+const PHASE_ORDER = ['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate', 'generating', 'delivery_review', 'delivered']
+
+export const PROCESS_STEPS = [
+  { id: 'discovery', label: '需求访谈', gate: 'discovery' },
+  { id: 'brief', label: '创作简报', gate: 'brief_review' },
+  { id: 'concept', label: '创意方向', gate: 'concept_selection' },
+  { id: 'storyboard', label: '分镜', gate: 'storyboard_review' },
+  { id: 'generate', label: '出片', gate: 'ready_to_generate' },
+  { id: 'delivery', label: '交付', gate: 'delivery_review' },
+]
+
+const clampScore = (value) => Math.max(0, Math.min(100, Math.round(Number(value) || 0)))
+const average = (values) => {
+  const items = values.filter((item) => Number.isFinite(item))
+  return items.length ? items.reduce((sum, item) => sum + item, 0) / items.length : 0
+}
+const richness = (text, min = 6, good = 36) => {
+  const n = String(text || '').trim().length
+  if (!n) return 0
+  if (n >= good) return 100
+  if (n <= min) return Math.round(40 * n / min)
+  return Math.round(40 + 60 * (n - min) / (good - min))
+}
+const pastPhase = (phase, gate) => PHASE_ORDER.indexOf(phase) > PHASE_ORDER.indexOf(gate)
+
+export function buildProcessProgress(project) {
+  const phase = PROJECT_PHASE(project)
+  const brief = project.creativeBrief || {}
+  const readiness = briefReadiness(project)
+  const required = Object.keys(BRIEF_LABELS)
+  const filled = required.filter((key) => String(brief[key] || '').trim()).length
+  const turnsDone = Math.min(Number(project.discoveryTurns || 0), readiness.minimumTurns)
+  const concepts = Array.isArray(project.concepts) ? project.concepts : []
+  const selected = concepts.find((item) => item.id === project.selectedConceptId)
+  const shots = Array.isArray(project.shots) ? project.shots : []
+  const expectedShots = Math.max(1, Math.round((Number(project.duration) || 18) / 6))
+  const successShots = shots.filter((item) => item.status === 'Success').length
+  const failedShots = shots.filter((item) => item.status === 'Fail').length
+
+  const discoveryDone = pastPhase(phase, 'discovery') || readiness.ready
+  const discovery = {
+    completeness: discoveryDone ? 100 : clampScore((filled / required.length) * 70 + (readiness.minimumTurns ? (turnsDone / readiness.minimumTurns) * 30 : 30)),
+    quality: clampScore(average(required.map((key) => richness(brief[key]))) + ((project.referenceImages || []).length ? 8 : 0)),
+    missing: [
+      ...readiness.missing,
+      readiness.turnsRemaining ? `还需 ${readiness.turnsRemaining} 轮交流` : '',
+    ].filter(Boolean),
+  }
+
+  const briefDone = Boolean(project.briefConfirmedAt) || pastPhase(phase, 'brief_review')
+  const briefMissing = ['platform', 'audio', 'constraints'].filter((key) => !String(brief[key] || '').trim()).map((key) => ({ platform: '发布平台', audio: '声音', constraints: '边界' }[key]))
+  const briefStep = {
+    completeness: briefDone ? 100 : phase === 'brief_review' ? 85 : discoveryDone ? 55 : clampScore((filled / required.length) * 40),
+    quality: clampScore(discovery.quality * 0.55 + richness(brief.platform) * 0.15 + richness(brief.audio) * 0.15 + richness(brief.constraints) * 0.15),
+    missing: briefDone ? [] : briefMissing,
+  }
+
+  const conceptDone = Boolean(project.selectedConceptId) || pastPhase(phase, 'concept_selection')
+  const conceptStep = {
+    completeness: conceptDone ? 100 : concepts.length ? 55 : 0,
+    quality: concepts.length
+      ? clampScore(average(concepts.map((item) => average(['title', 'logline', 'narrative', 'visualHook', 'ending'].map((key) => richness(item[key], 4, 24))))) + (selected ? 6 : 0))
+      : 0,
+    missing: conceptDone ? [] : concepts.length ? ['还没选定创意方向'] : ['还没有创意方向'],
+  }
+
+  const storyboardDone = Boolean(project.storyboardConfirmedAt) || pastPhase(phase, 'storyboard_review')
+  const weakPrompts = shots.filter((item) => String(item.video_prompt || '').trim().length < 40).length
+  const reviewFails = (project.qualityReview?.checks || []).filter((item) => item.status === 'fail').map((item) => item.label)
+  const storyboardStep = {
+    completeness: storyboardDone ? 100 : shots.length ? clampScore(40 + 60 * Math.min(1, shots.length / expectedShots)) : 0,
+    quality: clampScore(project.qualityReview?.score ?? (shots.length ? average(shots.map((item) => richness(item.video_prompt, 40, 180))) : 0)),
+    missing: storyboardDone
+      ? reviewFails
+      : [
+        shots.length ? '' : '还没有分镜',
+        shots.length && shots.length < expectedShots ? `镜头数不足，目标 ${expectedShots} 镜` : '',
+        weakPrompts ? `${weakPrompts} 个镜头提示过短` : '',
+      ].filter(Boolean),
+  }
+
+  const generateDone = ['delivery_review', 'delivered'].includes(phase) && successShots === shots.length && shots.length > 0
+  const generateStep = {
+    completeness: generateDone
+      ? 100
+      : phase === 'ready_to_generate' ? 15
+        : shots.length ? clampScore(100 * successShots / Math.max(shots.length, expectedShots))
+          : 0,
+    quality: shots.length ? clampScore((100 * successShots / shots.length) - failedShots * 12) : 0,
+    missing: generateDone ? [] : [
+      failedShots ? `${failedShots} 镜失败` : '',
+      shots.filter((item) => item.taskId && !['Success', 'Fail'].includes(item.status)).length ? '生成仍在进行' : '',
+      !shots.length ? '还没开拍' : '',
+    ].filter(Boolean),
+  }
+
+  const deliveryDone = phase === 'delivered'
+  const deliveryStep = {
+    completeness: deliveryDone ? 100 : project.finalUrl ? 80 : 0,
+    quality: project.finalError ? 35 : deliveryDone ? 92 : project.finalUrl ? 78 : 0,
+    missing: deliveryDone ? [] : project.finalError ? [project.finalError] : project.finalUrl ? ['成片待确认交付'] : ['还没有成片'],
+  }
+
+  const byId = { discovery, brief: briefStep, concept: conceptStep, storyboard: storyboardStep, generate: generateStep, delivery: deliveryStep }
+  const currentId = PROCESS_STEPS.find((item) => item.gate === phase)?.id
+    || (phase === 'quality_review' ? 'storyboard' : phase === 'generating' ? 'generate' : PROCESS_STEPS[0].id)
+  const steps = PROCESS_STEPS.map((item) => {
+    const data = byId[item.id]
+    const current = item.id === currentId
+    const status = data.completeness >= 100 && !current ? 'done' : current ? 'active' : data.completeness > 0 ? 'active' : 'todo'
+    return {
+      id: item.id,
+      label: item.label,
+      completeness: data.completeness,
+      quality: data.quality,
+      status,
+      current,
+      missing: data.missing,
+      canContinue: true,
+      note: data.completeness >= 100
+        ? '已完整，仍可继续对话修改'
+        : data.missing[0] || '进行中',
+    }
+  })
+  const scored = steps.filter((item) => item.completeness > 0 && item.quality > 0)
+  return {
+    overallCompleteness: clampScore(average(steps.map((item) => item.completeness))),
+    overallQuality: scored.length ? clampScore(average(scored.map((item) => item.quality))) : 0,
+    currentId,
+    steps,
+  }
+}
+
+function PROJECT_PHASE(project) {
+  return PHASE_ORDER.includes(project?.phase) ? project.phase : 'discovery'
+}
+
 export function directorSystemFor(project) {
   const readiness = briefReadiness(project)
   const phase = project.phase || 'discovery'
+  const progress = buildProcessProgress(project)
+  const progressLine = progress.steps.map((item) => `${item.label}完整${item.completeness}%质量${item.quality}${item.missing.length ? `缺${item.missing.join('/')}` : ''}`).join('；')
   return `你是星绘视频工坊的创作导演。你要像专业导演访谈一样逐步理解用户，而不是听到一句话就写分镜或开拍。
 用户不懂模型、工作流、节点和推理软件，永远不要向用户提这些内部术语。
 
 当前阶段：${phase}
+制作完整度：${progress.overallCompleteness}%
+过程质量：${progress.overallQuality}
+各过程：${progressLine}
 简报是否可以送审：${readiness.ready ? '可以' : '不可以'}
 仍缺信息：${readiness.missing.join('、') || '无'}
 还需完成的发现对话轮数：${readiness.turnsRemaining}
@@ -39,17 +181,18 @@ export function directorSystemFor(project) {
 7. 仅在仍需创作决策时给 2-4 个真正有差异的选择；简报已经完整、用户说“直接做/开始/继续”或用户允许你决定时，给出专业默认方案并结束本轮，不要继续问声音、BGM、配音、口型等非必要项。首版默认不承诺对口型、配音或 BGM，除非这些能力已被项目明确接通。
 8. 只输出一个 JSON 对象，不要 markdown：{"say":"给用户的中文回复","insight":"你基于当前信息作出的专业判断及理由","choices":[{"label":"选项短标题","description":"选择后的创作影响","reply":"用户选择此项时送回导演的完整回答"}],"actions":[]}
 9. 用户明确说“直接开始/直接制作/立即开始/开拍”时，这是授权你采用专业默认值的指令：本轮必须用 update_brief 补全或更新全部相关简报字段，不得提问，choices 为空。服务端会继续完成分镜与本机开拍。
+10. 完整度满只表示这一关可以往下走，不表示对话结束。任何阶段用户继续补充、改方向、改分镜时，必须吸收修改（update_brief / rewrite_shot / regenerate_concepts），并明确告诉用户“已经完整，仍可继续改”。不要因为某关已完整而拒绝交流或强迫进入下一关。
 
 阶段规则：
-- discovery：提炼用户回答并 update_brief。简报不可送审时才继续问一个问题；可送审时必须 present_brief，并且 choices 为空，不得再追加访谈问题。
-- brief_review：复述和修改简报。用户说“确认/好/继续/开始制作”时，如同时给出修改内容，先 update_brief；不要追问。服务端会负责进入下一道确认。
-- concept_selection：帮助比较创意方向。用户需要在界面选择一个方向；如用户要求换一批，可 regenerate_concepts。
-- storyboard_review：讨论和修改分镜，可 rewrite_shot。用户需要在界面确认分镜。
-- quality_review：解释质量检查结果；需要修改时可建议用户返回分镜评审。
-- ready_to_generate：说明已经可以开拍，引导用户点击开拍按钮；不得输出生成动作。
-- generating：汇报状态、回答问题，不要重复提交任务。
+- discovery：提炼用户回答并 update_brief。简报不可送审时才继续问一个问题；可送审时必须 present_brief。用户若继续补充细节，继续 update_brief，不要拒绝。
+- brief_review：复述和修改简报。用户说“确认/好/继续/开始制作”时，如同时给出修改内容，先 update_brief；不要追问。服务端会负责进入下一道确认。用户若继续改简报，照样 update_brief。
+- concept_selection：帮助比较创意方向。用户需要在界面选择一个方向；如用户要求换一批，可 regenerate_concepts。已选方向后若用户改口，仍可比较或换一批。
+- storyboard_review：讨论和修改分镜，可 rewrite_shot。用户需要在界面确认分镜。分镜完整后仍可按用户意见改某一镜。
+- quality_review：解释质量检查结果；用户要改分镜时用 rewrite_shot，不要只让用户点按钮。
+- ready_to_generate：说明已经可以开拍，引导用户点击开拍按钮；不得输出生成动作。用户若继续改剧本或分镜，照样吸收。
+- generating：汇报状态、回答问题，不要重复提交任务。用户仍可讨论成片和返修方向。
 - delivery_review：收集成片反馈。用户需要在界面确认交付或返回分镜返修。
-- delivered：项目已经交付，只回答总结性问题。
+- delivered：项目已经交付，只回答总结性问题，用户仍可继续聊复盘。
 
 actions 可选：
 {"op":"update_brief","brief":{"goal":"","audience":"","platform":"","story":"","subject":"","visualStyle":"","tone":"","audio":"","constraints":"","referenceNotes":""},"aspect":"16:9|9:16|1:1","duration":6|12|18|24|30|36|42|48|54|60,"engine":"local|cloud","skill":"narrative-film|product-ad|social-koc|knowledge-video|custom-video","title":"..."}
@@ -99,6 +242,7 @@ export function snapshotForDirector(project) {
     discoveryTurns: project.discoveryTurns || 0,
     creativeBrief: project.creativeBrief || {},
     briefReadiness: briefReadiness(project),
+    processProgress: buildProcessProgress(project),
     concepts: (project.concepts || []).map((item) => ({ id: item.id, title: item.title, logline: item.logline })),
     selectedConceptId: project.selectedConceptId || '',
     productionPlan: project.productionPlan || [],
