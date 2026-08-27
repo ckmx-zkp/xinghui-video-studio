@@ -1,0 +1,24 @@
+video-studio/director.mjs
+  s_60b1efe66596c9::t_f368be021efa17 77-88
+video-studio/server.mjs
+  s_60b1efe66596c9::t_f368be021efa17 11,970,973,975,979-991,1005,1008-1013,1015-1024
+  s_60b1efe66596c9::t_d1f7e335f858ec 1025
+video-studio/test/workflow.test.mjs
+  s_60b1efe66596c9::t_f368be021efa17 6,75-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "0204513c91e9866745cf665549dad5ac1b1fac8f",
+  "prompts": {},
+  "sessions": {
+    "s_60b1efe66596c9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0413c-0cd3-72b3-8dde-388ea1dab9f5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kunpeng2.zhang <kunpeng2.zhang@ly.com>"
+    }
+  }
+}
