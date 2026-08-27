@@ -92,6 +92,15 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   if (!response.ok) throw new Error(data.error || `请求失败 (${response.status})`)
   return data
 }
+const imageFromClipboard = (clipboard: DataTransfer) => {
+  for (const item of Array.from(clipboard.items)) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile()
+      if (file) return file
+    }
+  }
+  return Array.from(clipboard.files).find((item) => item.type.startsWith('image/'))
+}
 const statusLabel = (value: string) => value === 'Success' ? '已完成' : value === 'Fail' ? '失败' : value === 'ready' ? '待生成' : '处理中'
 const phaseLabel: Record<string, string> = {
   discovery: '需求访谈',
@@ -303,10 +312,10 @@ function App() {
               if (file) selectReferenceImage(file)
               else setError('请拖入 JPG、PNG 或 WebP 图片')
             }}>
-              <div className="chat-field">
+              <div className={`chat-field ${pendingAttachment ? 'has-attachment' : ''}`}>
                 {pendingAttachment && <div className="pending-attachment"><img src={pendingAttachment.url} alt="待发送参考图" /><button type="button" aria-label="移除待发送参考图" title="移除图片" onClick={() => setPendingAttachment(null)}><X /></button></div>}
                 <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="描述需求或粘贴参考图" rows={2} onPaste={(event) => {
-                  const file = Array.from(event.clipboardData.files).find((item) => item.type.startsWith('image/'))
+                  const file = imageFromClipboard(event.clipboardData)
                   if (!file) return
                   event.preventDefault()
                   selectReferenceImage(file)
