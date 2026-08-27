@@ -101,6 +101,9 @@ const imageFromClipboard = (clipboard: DataTransfer) => {
   }
   return Array.from(clipboard.files).find((item) => item.type.startsWith('image/'))
 }
+const createClientId = () => typeof window.crypto?.randomUUID === 'function'
+  ? window.crypto.randomUUID()
+  : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const statusLabel = (value: string) => value === 'Success' ? '已完成' : value === 'Fail' ? '失败' : value === 'ready' ? '待生成' : '处理中'
 const phaseLabel: Record<string, string> = {
   discovery: '需求访谈',
@@ -170,7 +173,7 @@ function App() {
     const submittedDraft = draft
     const submittedAttachment = pendingAttachment
     const submittedContent = text || '请分析这张参考图，并结合图片继续创作访谈。'
-    const optimisticId = `pending-${crypto.randomUUID()}`
+    const optimisticId = `pending-${createClientId()}`
     setBusy(true)
     setPendingChoiceId(choiceId || null)
     setError('')
