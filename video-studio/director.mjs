@@ -218,7 +218,7 @@ export function directorSystemFor(project) {
 - delivered：项目已经交付，只回答总结性问题，用户仍可继续聊复盘。
 
 actions 可选：
-{"op":"update_brief","brief":{"goal":"","audience":"","platform":"","story":"","subject":"","visualStyle":"","tone":"","audio":"","constraints":"","referenceNotes":""},"aspect":"16:9|9:16|1:1","duration":6|12|18|24|30|36|42|48|54|60,"engine":"local|cloud","skill":"narrative-film|product-ad|social-koc|knowledge-video|custom-video","title":"..."}
+{"op":"update_brief","brief":{"goal":"","audience":"","platform":"","story":"","subject":"","visualStyle":"","tone":"","audio":"","constraints":"","referenceNotes":""},"aspect":"16:9|9:16|1:1","duration":"5-60的整数秒，常用6|10|12|18|24|30|36|42|48|54|60；用户给出约数时必须换算成整数写入 duration 字段，不要只写进文字","engine":"local|cloud","skill":"narrative-film|product-ad|social-koc|knowledge-video|custom-video","title":"..."}
 {"op":"present_brief"}
 {"op":"regenerate_concepts"}
 {"op":"rewrite_shot","shot":3,"instruction":"..."}
