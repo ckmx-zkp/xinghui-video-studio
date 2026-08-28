@@ -309,7 +309,7 @@ const miniFetch = async (url, options = {}) => {
   const response = await fetch(url, {
     ...options,
     headers: { ...authHeaders(), ...(options.headers || {}) },
-    signal: options.signal || AbortSignal.timeout(90000),
+    signal: options.signal || AbortSignal.timeout(options.timeoutMs || (url.includes('/chat/completions') ? 180000 : 90000)),
   })
   const text = await response.text()
   let data

@@ -565,7 +565,6 @@ function App() {
                   </div>
                 </div>
               )}
-              {project && <WorkflowPanel project={project} busy={busy} status={status} onAction={runProjectAction} />}
               {Boolean(project?.shots?.length) && (
                 <div className="inline-shots">
                   <div className="inline-block-title"><Film />分镜</div>
@@ -613,6 +612,7 @@ function App() {
                   </div>
                 </details>
               )}
+              {project && <WorkflowPanel project={project} busy={busy} status={status} onAction={runProjectAction} />}
             </div>
             {error && <div className="error"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
             <form className={`chat-input ${draggingImage ? 'is-dragging' : ''} ${busy ? 'is-busy' : ''}`} onSubmit={(event) => { event.preventDefault(); send() }} onDragOver={(event) => {
