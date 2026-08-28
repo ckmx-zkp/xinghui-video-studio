@@ -622,7 +622,7 @@ app.post('/api/merge', (_req, res) => {
 
 async function makeConcepts(project) {
   const brief = project.creativeBrief || {}
-  const prompt = `你是资深创意制片人。根据已确认的创作简报，先给出你对本项目创意突破口的专业判断，再拆解一条可执行的制作计划，并提出3个差异明确、都能实际完成的创意方向。计划应覆盖策划、素材、分镜、生成、声音、合成与审核，但不要加入本项目做不到的事项。创意方向之间应在叙事结构或视觉表达上真正不同，不能只是换标题。只返回JSON：{"insight":"创意判断和依据","tasks":[{"title":"任务名","purpose":"为什么做","deliverable":"交付物","owner":"导演|画面|声音|剪辑"}],"concepts":[{"title":"方向名","logline":"一句话故事","narrative":"叙事方法","visualHook":"核心视觉记忆点","ending":"结尾设计"}]}。使用的创作方法：${project.skill || 'custom-video'}。创作简报：${JSON.stringify({ ...brief, aspect: project.aspect, duration: project.duration, engine: project.engine })}`
+  const prompt = `你是资深创意制片人。根据已确认的创作简报和当前已生效文字标准，先给出你对本项目创意突破口的专业判断，再拆解一条可执行的制作计划，并提出3个差异明确、都能实际完成的创意方向。用户手动修改过的文字标准优先级最高，不得擅自恢复旧版本。计划应覆盖策划、素材、分镜、生成、声音、合成与审核，但不要加入本项目做不到的事项。创意方向之间应在叙事结构或视觉表达上真正不同，不能只是换标题。只返回JSON：{"insight":"创意判断和依据","tasks":[{"title":"任务名","purpose":"为什么做","deliverable":"交付物","owner":"导演|画面|声音|剪辑"}],"concepts":[{"title":"方向名","logline":"一句话故事","narrative":"叙事方法","visualHook":"核心视觉记忆点","ending":"结尾设计"}]}。使用的创作方法：${project.skill || 'custom-video'}。创作简报：${JSON.stringify({ ...brief, aspect: project.aspect, duration: project.duration, engine: project.engine })}。当前已生效文字标准：${JSON.stringify(currentTextStandards(project))}`
   const data = await miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST', body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.7 }),
   })
@@ -689,8 +689,45 @@ export function storeTextArtifacts(project, drafts, model = textModel) {
   return created
 }
 
+export function currentTextStandards(project) {
+  return (Array.isArray(project.textArtifacts) ? project.textArtifacts : [])
+    .filter((item) => item.status === 'current')
+    .map(({ id, type, title, summary, version, content }) => ({ id, type, title, summary, version, content }))
+}
+
+function archiveCurrentRender(project) {
+  if (!project.finalUrl && !project.finalFilename) return
+  project.previousRenders = Array.isArray(project.previousRenders) ? project.previousRenders : []
+  project.previousRenders.push({
+    id: crypto.randomUUID(),
+    url: project.finalUrl || '',
+    filename: project.finalFilename || '',
+    deliveredAt: project.deliveredAt || new Date().toISOString(),
+  })
+}
+
+export function invalidateDownstreamForStandards(project) {
+  if (['delivery_review', 'delivered'].includes(project.phase)) archiveCurrentRender(project)
+  if (project.phase !== 'discovery') project.phase = 'brief_review'
+  project.briefConfirmedAt = ''
+  project.storyboardConfirmedAt = ''
+  project.concepts = []
+  project.selectedConceptId = ''
+  project.productionPlan = []
+  project.shots = []
+  project.qualityReview = null
+  project.stageChoices = []
+  project.finalUrl = ''
+  project.finalFilename = ''
+  project.finalError = ''
+  project.deliveredAt = ''
+  project.standardRevision = Number(project.standardRevision || 0) + 1
+  project.standardUpdatedAt = new Date().toISOString()
+  return project
+}
+
 async function makeTextPackage(project, revisionInstruction = '') {
-  const prompt = `你是商业短视频项目的文字创作总监。根据当前创作简报，直接完成一套可供用户修改的首版文字方案，不要继续提问，不要生成视频。内容必须具体、有导演判断，避免空泛套话。完整脚本必须按总时长给出timeline数组，每项写明时间段、画面、动作、旁白或字幕，并同时总结开场、发展、结尾、旁白和字幕策略；视听说明必须覆盖主体连续性、场景、镜头、光线色彩和声音。只返回JSON：{"artifacts":[{"type":"director_treatment","title":"导演阐述","summary":"一句话摘要","content":{"premise":"核心表达","approach":"叙事方法","audiencePromise":"观众所得"}},{"type":"script","title":"完整脚本","summary":"一句话摘要","content":{"timeline":["0-6秒：画面、动作、旁白或字幕"],"opening":"开场画面和作用","development":"发展与转折","ending":"结尾落点","voiceover":"完整旁白或旁白策略","captions":"字幕内容或策略"}},{"type":"visual_guide","title":"视听说明","summary":"一句话摘要","content":{"subject":"主体连续性","scenes":"场景设计","camera":"镜头语言","colorLight":"色彩光线","sound":"声音设计"}},{"type":"production_notes","title":"制作说明","summary":"一句话摘要","content":{"assumptions":["导演采用的假设"],"risks":["执行风险"],"nextRevision":"用户可继续修改的方向"}}]}。项目：${JSON.stringify({ title: project.title, idea: project.idea, aspect: project.aspect, duration: project.duration, skill: project.skill, creativeBrief: project.creativeBrief })}。${revisionInstruction ? `用户本轮修改要求：${revisionInstruction}` : '这是首版方案。'}`
+  const prompt = `你是商业短视频项目的文字创作总监。根据当前创作简报，直接完成一套可供用户修改的首版文字方案，不要继续提问，不要生成视频。内容必须具体、有导演判断，避免空泛套话。完整脚本必须按总时长给出timeline数组，每项写明时间段、画面、动作、旁白或字幕，并同时总结开场、发展、结尾、旁白和字幕策略；视听说明必须覆盖主体连续性、场景、镜头、光线色彩和声音。只返回JSON：{"artifacts":[{"type":"director_treatment","title":"导演阐述","summary":"一句话摘要","content":{"premise":"核心表达","approach":"叙事方法","audiencePromise":"观众所得"}},{"type":"script","title":"完整脚本","summary":"一句话摘要","content":{"timeline":["0-6秒：画面、动作、旁白或字幕"],"opening":"开场画面和作用","development":"发展与转折","ending":"结尾落点","voiceover":"完整旁白或旁白策略","captions":"字幕内容或策略"}},{"type":"visual_guide","title":"视听说明","summary":"一句话摘要","content":{"subject":"主体连续性","scenes":"场景设计","camera":"镜头语言","colorLight":"色彩光线","sound":"声音设计"}},{"type":"production_notes","title":"制作说明","summary":"一句话摘要","content":{"assumptions":["导演采用的假设"],"risks":["执行风险"],"nextRevision":"用户可继续修改的方向"}}]}。项目：${JSON.stringify({ title: project.title, idea: project.idea, aspect: project.aspect, duration: project.duration, skill: project.skill, creativeBrief: project.creativeBrief })}。当前已生效文字标准：${JSON.stringify(currentTextStandards(project))}。${revisionInstruction ? `用户本轮修改要求：${revisionInstruction}` : '这是首版方案。'}`
   const request = (recovery = false) => miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST',
     body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: recovery ? `${prompt}\n上次输出不完整。请严格只返回上述JSON对象。` : prompt }], max_tokens: recovery ? 12000 : 8000, temperature: recovery ? 0.2 : 0.45, response_format: { type: 'json_object' } }),
@@ -714,7 +751,7 @@ async function makeStoryboard(project) {
   const concept = (project.concepts || []).find((item) => item.id === project.selectedConceptId)
   if (!concept) throw new Error('请先选择创意方向')
   const count = Math.max(1, Math.ceil(Number(project.duration || 18) / 6))
-  const prompt = `你是专业短视频导演。严格依据已确认的创作简报和用户选择的创意方向，拆成 ${count} 个连续镜头，每个恰好6秒，画幅${project.aspect || '16:9'}。保持主体外观、服装、道具和环境连续。每个video_prompt必须可独立生成视频，写清主体特征、动作、环境、镜头运动、构图、光线、声音以及与前后镜头的连续性，避免模型难以完成的复杂快速动作。先给出你对分镜节奏和视觉组织的专业判断，再提供2-3个可供用户继续调整的方向。只返回JSON：{"title":"片名","summary":"一句话创意","insight":"分镜设计判断和理由","choices":[{"label":"调整方向","description":"对成片的影响","reply":"用户选择后送回导演的修改要求"}],"shots":[{"title":"镜头1","description":"观众看到和听到什么","video_prompt":"可直接生成视频的详细提示词"}]}。创作简报：${JSON.stringify({ ...brief, aspect: project.aspect, duration: project.duration, engine: project.engine })}。选定方向：${JSON.stringify(concept)}`
+  const prompt = `你是专业短视频导演。严格依据已确认的创作简报、用户选择的创意方向和当前已生效文字标准，拆成 ${count} 个连续镜头，每个恰好6秒，画幅${project.aspect || '16:9'}。用户手动修改过的脚本、视听说明和制作说明优先级最高。保持主体外观、服装、道具和环境连续。每个video_prompt必须可独立生成视频，写清主体特征、动作、环境、镜头运动、构图、光线、声音以及与前后镜头的连续性，避免模型难以完成的复杂快速动作。先给出你对分镜节奏和视觉组织的专业判断，再提供2-3个可供用户继续调整的方向。只返回JSON：{"title":"片名","summary":"一句话创意","insight":"分镜设计判断和理由","choices":[{"label":"调整方向","description":"对成片的影响","reply":"用户选择后送回导演的修改要求"}],"shots":[{"title":"镜头1","description":"观众看到和听到什么","video_prompt":"可直接生成视频的详细提示词"}]}。创作简报：${JSON.stringify({ ...brief, aspect: project.aspect, duration: project.duration, engine: project.engine })}。当前已生效文字标准：${JSON.stringify(currentTextStandards(project))}。选定方向：${JSON.stringify(concept)}`
   const data = await miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST', body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 8000, temperature: 0.4 }),
   })
@@ -749,7 +786,7 @@ async function rewriteShot(project, shotNo, instruction) {
   const shot = project.shots.find((item) => item.index === shotNo - 1)
   if (!shot) throw new Error(`没有第 ${shotNo} 镜`)
   const concept = (project.concepts || []).find((item) => item.id === project.selectedConceptId)
-  const prompt = `只修改这一镜，严格遵守创作简报和选定方向，保持主体外观与前后镜头连续。创作简报:${JSON.stringify(project.creativeBrief || {})}。选定方向:${JSON.stringify(concept || {})}。原标题:${shot.title}。原描述:${shot.description}。原提示词:${shot.video_prompt}。修改要求:${instruction}。只返回JSON：{"title":"...","description":"...","video_prompt":"..."}`
+  const prompt = `只修改这一镜，严格遵守创作简报、当前已生效文字标准和选定方向，保持主体外观与前后镜头连续。用户手动修改的标准优先级最高。创作简报:${JSON.stringify(project.creativeBrief || {})}。当前已生效文字标准:${JSON.stringify(currentTextStandards(project))}。选定方向:${JSON.stringify(concept || {})}。原标题:${shot.title}。原描述:${shot.description}。原提示词:${shot.video_prompt}。修改要求:${instruction}。只返回JSON：{"title":"...","description":"...","video_prompt":"..."}`
   const data = await miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST', body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 4000, temperature: 0.4 }),
   })
@@ -1035,7 +1072,7 @@ export function recordDirectorQuestion(project, question) {
 
 async function reviewStoryboard(project) {
   const concept = (project.concepts || []).find((item) => item.id === project.selectedConceptId)
-  const prompt = `你是商业视频制作的质量审核导演。检查分镜是否忠于创作简报，主体是否连续，节奏是否适合总时长，每镜是否能被视频模型执行，声音设计是否连贯，结尾是否完成目标。不要改写分镜，只返回JSON：{"score":0,"verdict":"pass|revise","summary":"总评","checks":[{"label":"检查项","status":"pass|warning|fail","note":"依据"}],"recommendations":["可执行建议"]}。创作简报：${JSON.stringify(project.creativeBrief || {})}。创意方向：${JSON.stringify(concept || {})}。分镜：${JSON.stringify((project.shots || []).map(({ title, description, video_prompt }) => ({ title, description, video_prompt })))}`
+  const prompt = `你是商业视频制作的质量审核导演。检查分镜是否忠于创作简报和当前已生效文字标准，主体是否连续，节奏是否适合总时长，每镜是否能被视频模型执行，声音设计是否连贯，结尾是否完成目标。用户手动修改的标准优先级最高。不要改写分镜，只返回JSON：{"score":0,"verdict":"pass|revise","summary":"总评","checks":[{"label":"检查项","status":"pass|warning|fail","note":"依据"}],"recommendations":["可执行建议"]}。创作简报：${JSON.stringify(project.creativeBrief || {})}。当前已生效文字标准：${JSON.stringify(currentTextStandards(project))}。创意方向：${JSON.stringify(concept || {})}。分镜：${JSON.stringify((project.shots || []).map(({ title, description, video_prompt }) => ({ title, description, video_prompt })))}`
   const data = await miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST', body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 6000, temperature: 0.2 }),
   })
@@ -1137,6 +1174,66 @@ app.post('/api/projects/:id/use-asset', (req, res) => {
     const shot = (project.shots || []).find((item) => !item.imageFile)
     if (shot) shot.imageFile = copied
     else project.pendingImage = copied
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
+})
+
+app.post('/api/projects/:id/update-artifacts', (req, res) => {
+  try {
+    const project = projectOr404(req.params.id)
+    if (project.phase === 'generating') return res.status(409).json({ error: '视频生成中不能修改生产标准，请等待当前任务完成' })
+
+    const changed = []
+    const brief = req.body?.creativeBrief
+    if (brief && typeof brief === 'object') {
+      project.creativeBrief = project.creativeBrief || {}
+      for (const key of BRIEF_KEYS) {
+        if (typeof brief[key] !== 'string') continue
+        const value = brief[key].trim().slice(0, 2000)
+        if (project.creativeBrief[key] !== value) changed.push(key)
+        project.creativeBrief[key] = value
+      }
+      project.idea = project.creativeBrief.goal || project.idea
+    }
+
+    const settings = req.body?.settings && typeof req.body.settings === 'object' ? req.body.settings : {}
+    const settingPatch = {
+      title: settings.title,
+      aspect: settings.aspect,
+      duration: settings.duration,
+      engine: settings.engine,
+      skill: settings.skill,
+    }
+    changed.push(...applyBriefPatch(project, settingPatch))
+
+    const arrayFields = new Set(['timeline', 'assumptions', 'risks'])
+    for (const draft of Array.isArray(req.body?.artifacts) ? req.body.artifacts : []) {
+      const type = String(draft?.type || '')
+      const current = currentTextStandards(project).find((item) => item.type === type)
+      if (!current || !draft?.content || typeof draft.content !== 'object') continue
+      const content = Object.fromEntries(Object.entries(draft.content).map(([key, value]) => [
+        key,
+        arrayFields.has(key)
+          ? (Array.isArray(value) ? value : String(value ?? '').split(/\r?\n/)).map((item) => String(item).trim()).filter(Boolean)
+          : String(value ?? '').trim(),
+      ]))
+      const next = {
+        type,
+        title: String(draft.title || current.title).trim(),
+        summary: String(draft.summary ?? current.summary).trim(),
+        content,
+      }
+      if (JSON.stringify({ title: current.title, summary: current.summary, content: current.content })
+        === JSON.stringify({ title: next.title, summary: next.summary, content: next.content })) continue
+      storeTextArtifacts(project, [next], 'user')
+      changed.push(`artifact:${type}`)
+    }
+
+    const unique = [...new Set(changed)]
+    if (!unique.length) return res.json(project)
+    invalidateDownstreamForStandards(project)
+    recordBriefRevision(project, unique, '用户手动修改右侧生产标准，后续创意、分镜和视频生成均以新版本为准。')
     store.save(project)
     res.json(project)
   } catch (error) { res.status(error.status || 400).json({ error: error.message }) }

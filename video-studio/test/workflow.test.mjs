@@ -4,7 +4,7 @@ import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
-import { answerPendingDecision, app, applyDirectorDefaults, comfyStageForNode, historyForDirector, isAdvanceIntent, isDirectStartIntent, recordDirectorQuestion, resolveRuntimeModes, storeTextArtifacts } from '../server.mjs'
+import { answerPendingDecision, app, applyDirectorDefaults, comfyStageForNode, currentTextStandards, historyForDirector, invalidateDownstreamForStandards, isAdvanceIntent, isDirectStartIntent, recordDirectorQuestion, resolveRuntimeModes, storeTextArtifacts } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
@@ -125,6 +125,24 @@ describe('director workflow contract', () => {
     assert.equal(project.textArtifacts.length, 2)
     assert.equal(project.textArtifacts[0].status, 'superseded')
     assert.deepEqual(project.textArtifacts[1].sourceArtifactIds, [project.textArtifacts[0].id])
+    assert.deepEqual(currentTextStandards(project).map((item) => item.content.opening), ['开场B'])
+  })
+
+  it('invalidates stale downstream work while preserving standards and source assets', () => {
+    const project = {
+      phase: 'delivered', finalUrl: '/media/final.mp4', finalFilename: 'final.mp4', deliveredAt: '2026-08-28',
+      briefConfirmedAt: 'yes', storyboardConfirmedAt: 'yes', concepts: [{ id: 'c1' }], selectedConceptId: 'c1',
+      productionPlan: [{ id: 'p1' }], shots: [{ id: 's1' }], qualityReview: { score: 90 }, referenceImages: ['ref.png'],
+      textArtifacts: [{ id: 'a1', type: 'script', status: 'current' }], previousRenders: [],
+    }
+    invalidateDownstreamForStandards(project)
+    assert.equal(project.phase, 'brief_review')
+    assert.deepEqual(project.concepts, [])
+    assert.deepEqual(project.shots, [])
+    assert.equal(project.qualityReview, null)
+    assert.deepEqual(project.referenceImages, ['ref.png'])
+    assert.equal(project.textArtifacts.length, 1)
+    assert.equal(project.previousRenders.length, 1)
   })
 
   it('removes repeated or near-identical director choices', () => {
@@ -284,5 +302,41 @@ describe('server phase gates', () => {
     assert.equal(project.shots[0].taskId, undefined)
     assert.equal(project.shots[0].filename, undefined)
     assert.equal(project.finalUrl, '')
+  })
+
+  it('saves edited right-rail artifacts as the new production standard', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    const ready = {
+      ...created,
+      phase: 'ready_to_generate',
+      creativeBrief: { ...created.creativeBrief, goal: '旧目标', audience: '旧受众', story: '旧故事', subject: '旧主体', visualStyle: '旧风格', tone: '旧基调' },
+      textArtifacts: [{ id: 'script-v1', type: 'script', title: '完整脚本', summary: '旧版', version: 1, status: 'current', content: { timeline: ['0-6秒：旧画面'], voiceover: '旧旁白' }, sourceArtifactIds: [], model: 'MiniMax-M3', createdAt: '2026-08-28' }],
+      concepts: [{ id: 'c1' }], selectedConceptId: 'c1', shots: [{ id: 's1', index: 0, status: 'ready' }], qualityReview: { score: 88 },
+      briefConfirmedAt: 'yes', storyboardConfirmedAt: 'yes',
+    }
+    fs.writeFileSync(file, JSON.stringify(ready, null, 2))
+
+    const response = await fetch(`${baseUrl}/api/projects/${created.id}/update-artifacts`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        settings: { title: '新版项目', aspect: '9:16', duration: 30, engine: 'local', skill: 'product-ad' },
+        creativeBrief: { ...ready.creativeBrief, goal: '新版销售目标' },
+        artifacts: [{ type: 'script', title: '完整脚本', summary: '手工修订', content: { timeline: '0-6秒：新版画面\n6-12秒：新版转折', voiceover: '新版旁白' } }],
+      }),
+    })
+    assert.equal(response.status, 200)
+    const project = await response.json()
+    assert.equal(project.phase, 'brief_review')
+    assert.equal(project.title, '新版项目')
+    assert.equal(project.creativeBrief.goal, '新版销售目标')
+    assert.equal(project.shots.length, 0)
+    assert.equal(project.qualityReview, null)
+    const scripts = project.textArtifacts.filter((item) => item.type === 'script')
+    assert.equal(scripts.length, 2)
+    assert.equal(scripts[0].status, 'superseded')
+    assert.equal(scripts[1].version, 2)
+    assert.equal(scripts[1].model, 'user')
+    assert.deepEqual(scripts[1].content.timeline, ['0-6秒：新版画面', '6-12秒：新版转折'])
   })
 })

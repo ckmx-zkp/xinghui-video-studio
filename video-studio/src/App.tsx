@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, ChevronRight, CircleAlert, ClipboardCheck, Cloud, FileText, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Palette, Play, Plus, RefreshCw, RotateCcw, Send, Settings, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, CircleAlert, ClipboardCheck, Cloud, FileText, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Palette, Pencil, Play, Plus, RefreshCw, RotateCcw, Save, Send, Settings, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react'
 import './App.css'
 
 type Shot = {
@@ -60,6 +60,11 @@ type TextArtifact = {
   sourceArtifactIds: string[]
   model: string
   createdAt: string
+}
+type ArtifactEditDraft = {
+  settings: { title: string; aspect: string; duration: number; engine: string; skill: string }
+  creativeBrief: CreativeBrief
+  artifacts: Array<{ type: string; title: string; summary: string; content: Record<string, string> }>
 }
 type PreviousRender = { id: string; url: string; filename: string; deliveredAt: string }
 type QualityReview = {
@@ -278,6 +283,25 @@ function App() {
     }
   }
 
+  const saveArtifactStandards = async (nextDraft: ArtifactEditDraft) => {
+    if (!project || busy) return false
+    setBusy(true)
+    setError('')
+    try {
+      const next = await api<Project>(`/api/projects/${project.id}/update-artifacts`, {
+        method: 'POST',
+        body: JSON.stringify(nextDraft),
+      })
+      setProject(next)
+      return true
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '生产标准保存失败')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const uploadReference = async (file: File, shotIndex?: number) => {
     if (!project) throw new Error('项目尚未载入')
     if (file.size > 20 * 1024 * 1024) throw new Error('参考图不能超过20MB')
@@ -344,7 +368,7 @@ function App() {
           <main className="workspace chat-workspace">
             <div className="chat-log" ref={logRef}>
               {project?.processProgress && <ProcessStrip progress={project.processProgress} />}
-              {project && <div className="mobile-artifacts"><CreativeArtifacts project={project} compact /></div>}
+              {project && <div className="mobile-artifacts"><CreativeArtifacts project={project} compact busy={busy} onSave={saveArtifactStandards} /></div>}
               {messages.length === 0 && (
                 <>
                   <div className="bubble assistant">这次想做一支什么样的视频？先说一个大致想法，我会和你一起把故事、受众与画面方向梳理清楚。</div>
@@ -435,7 +459,7 @@ function App() {
                 </span>
               )}
             </div>
-            {project && <CreativeArtifacts project={project} />}
+            {project && <CreativeArtifacts project={project} busy={busy} onSave={saveArtifactStandards} />}
             {project?.processProgress && <ProcessBoard progress={project.processProgress} />}
             {project && <WorkflowPanel project={project} busy={busy} onAction={runProjectAction} />}
             {project && project.productionPlan.length > 0 && <ProductionCanvas project={project} />}
@@ -472,16 +496,18 @@ const artifactFieldLabels: Record<string, string> = {
   title: '项目标题', goal: '创作目标', audience: '目标受众', platform: '发布平台', story: '故事主线', subject: '主体角色',
   visualStyle: '视觉风格', tone: '情绪基调', audio: '声音设计', constraints: '制作边界', referenceNotes: '参考素材',
   aspect: '画幅', duration: '时长', engine: '生成方式', skill: '创作方法',
+  'artifact:director_treatment': '导演阐述', 'artifact:script': '完整脚本', 'artifact:visual_guide': '视听说明', 'artifact:production_notes': '制作说明',
 }
 
 const artifactSections = [
-  { id: 'positioning', title: '项目定位', icon: Users, fields: ['goal', 'audience', 'platform'] },
+  { id: 'positioning', title: '项目定位', icon: Users, fields: ['title', 'goal', 'audience', 'platform'] },
   { id: 'narrative', title: '叙事方案', icon: FileText, fields: ['story', 'subject', 'tone'] },
   { id: 'language', title: '视觉与声音', icon: Palette, fields: ['visualStyle', 'audio', 'referenceNotes'] },
   { id: 'execution', title: '制作约束', icon: SlidersHorizontal, fields: ['aspect', 'duration', 'engine', 'skill', 'constraints'] },
 ]
 
 function artifactValue(project: Project, field: string) {
+  if (field === 'title') return project.title
   if (field === 'aspect') return project.aspect
   if (field === 'duration') return `${project.duration} 秒`
   if (field === 'engine') return project.engine === 'cloud' ? '云端成片' : '本机生成'
@@ -495,7 +521,21 @@ const textArtifactFieldLabels: Record<string, string> = {
   assumptions: '导演假设', risks: '执行风险', nextRevision: '修订重点',
 }
 
-function CreativeArtifacts({ project, compact = false }: { project: Project; compact?: boolean }) {
+function artifactDraftFor(project: Project): ArtifactEditDraft {
+  return {
+    settings: { title: project.title, aspect: project.aspect, duration: project.duration, engine: project.engine, skill: project.skill },
+    creativeBrief: { ...project.creativeBrief },
+    artifacts: (project.textArtifacts || []).filter((item) => item.status === 'current').map((item) => ({
+      type: item.type,
+      title: item.title,
+      summary: item.summary,
+      content: Object.fromEntries(Object.entries(item.content).map(([key, value]) => [key, Array.isArray(value) ? value.join('\n') : value])),
+    })),
+  }
+}
+
+function CreativeArtifacts({ project, compact = false, busy, onSave }: { project: Project; compact?: boolean; busy: boolean; onSave: (draft: ArtifactEditDraft) => Promise<boolean> }) {
+  const [editDraft, setEditDraft] = useState<ArtifactEditDraft | null>(null)
   const recent = (project.briefRevisions || []).slice(-3).reverse()
   const artifactOrder = ['director_treatment', 'script', 'visual_guide', 'production_notes']
   const documents = (project.textArtifacts || [])
@@ -507,10 +547,54 @@ function CreativeArtifacts({ project, compact = false }: { project: Project; com
   const compactFields = recent[0]?.fields?.length
     ? recent[0].fields.slice(0, 4)
     : artifactSections.flatMap((section) => section.fields).filter((field) => artifactValue(project, field)).slice(0, 3)
+  const setBriefField = (field: keyof CreativeBrief, value: string) => setEditDraft((current) => current ? { ...current, creativeBrief: { ...current.creativeBrief, [field]: value } } : current)
+  const setSetting = (field: keyof ArtifactEditDraft['settings'], value: string | number) => setEditDraft((current) => current ? { ...current, settings: { ...current.settings, [field]: value } } : current)
+  const setDocument = (type: string, patch: Partial<ArtifactEditDraft['artifacts'][number]>) => setEditDraft((current) => current ? {
+    ...current,
+    artifacts: current.artifacts.map((item) => item.type === type ? { ...item, ...patch } : item),
+  } : current)
+  const setDocumentField = (type: string, field: string, value: string) => setEditDraft((current) => current ? {
+    ...current,
+    artifacts: current.artifacts.map((item) => item.type === type ? { ...item, content: { ...item.content, [field]: value } } : item),
+  } : current)
+  const commitEdit = async () => {
+    if (!editDraft) return
+    if (await onSave(editDraft)) setEditDraft(null)
+  }
+  if (editDraft) {
+    return (
+      <section className={`artifact-canvas artifact-editor${compact ? ' compact' : ''}`} aria-label="编辑生产标准">
+        <div className="workflow-title"><Pencil />编辑生产标准<div className="artifact-edit-actions"><button title="取消修改" aria-label="取消修改" disabled={busy} onClick={() => setEditDraft(null)}><X /></button><button title="保存生产标准" aria-label="保存生产标准" disabled={busy} onClick={commitEdit}>{busy ? <LoaderCircle className="spin" /> : <Save />}</button></div></div>
+        <fieldset>
+          <legend>项目与制作设置</legend>
+          <label><span>项目标题</span><input value={editDraft.settings.title} onChange={(event) => setSetting('title', event.target.value)} /></label>
+          <label><span>画幅</span><select value={editDraft.settings.aspect} onChange={(event) => setSetting('aspect', event.target.value)}><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option></select></label>
+          <label><span>时长</span><select value={editDraft.settings.duration} onChange={(event) => setSetting('duration', Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => (index + 1) * 6).map((value) => <option value={value} key={value}>{value} 秒</option>)}</select></label>
+          <label><span>生成方式</span><select value={editDraft.settings.engine} onChange={(event) => setSetting('engine', event.target.value)}><option value="local">本机生成</option><option value="cloud">云端成片</option></select></label>
+          <label><span>创作方法</span><select value={editDraft.settings.skill} onChange={(event) => setSetting('skill', event.target.value)}>{Object.entries(skillLabel).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+        </fieldset>
+        {artifactSections.slice(0, 3).map((section) => (
+          <fieldset key={section.id}>
+            <legend>{section.title}</legend>
+            {section.fields.filter((field) => field !== 'title').map((field) => <label key={field}><span>{artifactFieldLabels[field]}</span><textarea rows={2} value={editDraft.creativeBrief[field as keyof CreativeBrief]} onChange={(event) => setBriefField(field as keyof CreativeBrief, event.target.value)} /></label>)}
+          </fieldset>
+        ))}
+        <fieldset><legend>制作约束</legend><label><span>制作边界</span><textarea rows={3} value={editDraft.creativeBrief.constraints} onChange={(event) => setBriefField('constraints', event.target.value)} /></label></fieldset>
+        {editDraft.artifacts.map((item) => (
+          <fieldset key={item.type}>
+            <legend>{item.title}</legend>
+            <label><span>文档标题</span><input value={item.title} onChange={(event) => setDocument(item.type, { title: event.target.value })} /></label>
+            <label><span>摘要</span><textarea rows={2} value={item.summary} onChange={(event) => setDocument(item.type, { summary: event.target.value })} /></label>
+            {Object.entries(item.content).map(([field, value]) => <label key={field}><span>{textArtifactFieldLabels[field] || field}</span><textarea rows={field === 'timeline' ? 6 : 3} value={value} onChange={(event) => setDocumentField(item.type, field, event.target.value)} /></label>)}
+          </fieldset>
+        ))}
+      </section>
+    )
+  }
   if (compact) {
     return (
       <section className="artifact-canvas compact" aria-label="本轮创作产物">
-        <div className="workflow-title"><Sparkles />{recent[0] ? '本轮形成' : '当前创作产物'} <span>{filled}/{total}</span></div>
+        <div className="workflow-title"><Sparkles />{recent[0] ? '本轮形成' : '当前创作产物'} <span>{filled}/{total}</span><button className="artifact-edit-button" title="编辑生产标准" aria-label="编辑生产标准" onClick={() => setEditDraft(artifactDraftFor(project))}><Pencil /></button></div>
         <dl>
           {compactFields.map((field) => <div key={field}><dt>{artifactFieldLabels[field] || field}</dt><dd>{artifactValue(project, field) || '待确认'}</dd></div>)}
         </dl>
@@ -520,7 +604,7 @@ function CreativeArtifacts({ project, compact = false }: { project: Project; com
   }
   return (
     <section className="artifact-canvas" aria-label="持续创作产物">
-      <div className="workflow-title"><Sparkles />持续创作画布 <span>{filled}/{total} 项已形成</span></div>
+      <div className="workflow-title"><Sparkles />持续创作画布 <span>{filled}/{total} 项已形成</span><button className="artifact-edit-button" title="编辑生产标准" aria-label="编辑生产标准" onClick={() => setEditDraft(artifactDraftFor(project))}><Pencil /></button></div>
       <p>每轮对话确认的内容会立即写入这些生产文档，后续创意与分镜直接引用。</p>
       <div className="artifact-sections">
         {artifactSections.map((section) => {
