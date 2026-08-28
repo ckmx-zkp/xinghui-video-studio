@@ -4,7 +4,7 @@ import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
-import { app, applyDirectorDefaults, comfyStageForNode, historyForDirector, isAdvanceIntent, isDirectStartIntent, resolveRuntimeModes } from '../server.mjs'
+import { answerPendingDecision, app, applyDirectorDefaults, comfyStageForNode, historyForDirector, isAdvanceIntent, isDirectStartIntent, recordDirectorQuestion, resolveRuntimeModes, storeTextArtifacts } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
@@ -93,6 +93,7 @@ describe('director workflow contract', () => {
     const parsed = parseDirectorReply(JSON.stringify({
       say: '这个题材适合先确定情绪入口。',
       insight: '从通勤噪声切入能最快建立产品价值。',
+      question: { key: 'primary_expression', text: '更偏真实还是视觉风格？', importance: '改变脚本入口' },
       choices: [
         { label: '现实通勤', description: '强调真实共鸣', reply: '选择现实通勤方向' },
         { label: '视觉隐喻', description: '强调品牌质感', reply: '选择视觉隐喻方向' },
@@ -102,6 +103,28 @@ describe('director workflow contract', () => {
     assert.match(parsed.insight, /通勤噪声/)
     assert.equal(parsed.choices.length, 2)
     assert.equal(parsed.choices[1].reply, '选择视觉隐喻方向')
+    assert.equal(parsed.question.key, 'primary_expression')
+  })
+
+  it('records one keyed decision and resolves it without accepting duplicates', () => {
+    const project = { decisionLedger: [] }
+    const question = { key: 'primary_expression', text: '更偏真实还是视觉风格？', importance: '改变脚本入口' }
+    assert.ok(recordDirectorQuestion(project, question))
+    assert.equal(recordDirectorQuestion(project, question), null)
+    assert.equal(answerPendingDecision(project, '更偏真实共鸣'), project.decisionLedger[0])
+    assert.equal(project.decisionLedger[0].status, 'answered')
+    assert.equal(answerPendingDecision(project, '重复回答'), null)
+  })
+
+  it('versions text artifacts instead of overwriting prior work', () => {
+    const project = { textArtifacts: [] }
+    const first = storeTextArtifacts(project, [{ type: 'script', title: '完整脚本', summary: '首版', content: { opening: '开场A' } }], 'MiniMax-M3')
+    const second = storeTextArtifacts(project, [{ type: 'script', title: '完整脚本', summary: '修订版', content: { opening: '开场B' } }], 'MiniMax-M3')
+    assert.equal(first[0].version, 1)
+    assert.equal(second[0].version, 2)
+    assert.equal(project.textArtifacts.length, 2)
+    assert.equal(project.textArtifacts[0].status, 'superseded')
+    assert.deepEqual(project.textArtifacts[1].sourceArtifactIds, [project.textArtifacts[0].id])
   })
 
   it('removes repeated or near-identical director choices', () => {
@@ -171,8 +194,10 @@ describe('natural-language planning confirmations', () => {
 
   it('treats direct start as a distinct instruction and fills safe planning defaults', () => {
     assert.equal(isDirectStartIntent('直接开始制作视频！'), true)
+    assert.equal(isDirectStartIntent('直接开始制作一个智能酒店控制面板宣传片'), true)
     assert.equal(isDirectStartIntent('继续'), false)
     assert.equal(isDirectStartIntent('现在不要开拍'), false)
+    assert.equal(isDirectStartIntent('先不直接制作，我还要补充资料'), false)
     const project = { idea: '小狗坐推车兜风', creativeBrief: { goal: '小狗坐推车兜风' } }
     applyDirectorDefaults(project)
     for (const key of ['goal', 'audience', 'story', 'subject', 'visualStyle', 'tone']) assert.ok(project.creativeBrief[key])

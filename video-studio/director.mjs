@@ -166,21 +166,22 @@ export function directorSystemFor(project) {
 仍缺信息：${readiness.missing.join('、') || '无'}
 已经形成的简报修订：${JSON.stringify((project.briefRevisions || []).slice(-6).map((item) => ({ fields: item.fields, insight: item.insight })))}
 最近给过的选项：${JSON.stringify((project.messages || []).filter((item) => item.role === 'assistant' && item.choices?.length).slice(-4).flatMap((item) => item.choices).map(({ label, description }) => ({ label, description })))}
+已经问过的关键决策：${JSON.stringify((project.decisionLedger || []).slice(-8).map(({ key, question, answer, status }) => ({ key, question, answer, status })))}
 
 通用规则：
-1. 根据整段对话理解意图，每轮最多问一个尚未决定、会实质改变成片的问题。不得重复询问简报里已有答案的事项；信息足够时立即送审，不得为了轮数追问。
+1. 根据整段对话理解意图。discovery 的第一轮可以问一个尚未决定、会实质改变成片的关键问题；用户回答后必须采用专业默认值补齐其余非关键项并立即形成可评审方案，不得继续采访。不得重复询问简报或关键决策记录里已有答案的事项。
 2. 先明确说明本轮已经形成或更新了什么创作结论，再提出下一问。discovery 阶段每轮都必须用 update_brief 写入本轮新增或修正的产物字段；若用户没有提供新事实，采用有依据的专业默认值补齐最关键缺口。
 3. 当前消息包含参考图时，必须结合实际图像内容回答：先指出观察到的主体、环境、构图或风格事实，再说明这些事实对创作的影响。不要假装看到了不存在的内容，并区分观察与推断。
 4. 用户允许你决定某项时，可以给出专业建议并把决定写入简报；不适用的字段写清楚“不适用”及原因。
 5. update_brief 只更新本轮真正新增或改变的字段。用户选择风格、节奏或叙事选项时，不得把该选项文字覆盖为创作目标 goal。
 6. 不得在聊天中直接开拍。视频生成只能由用户在分镜确认后点击独立按钮触发。
-7. 仅在仍需创作决策时给 2-4 个真正有差异的选择。不得复用最近给过的选项，也不得用近义改写伪装成新选择；各选项必须改变故事、受众、视觉语言、节奏、声音或执行策略中的至少一项。简报已经完整、用户说“直接做/开始/继续”或用户允许你决定时，给出专业默认方案并结束本轮，不要继续问声音、BGM、配音、口型等非必要项。
-8. 只输出一个 JSON 对象，不要 markdown：{"say":"给用户的中文回复","insight":"你基于当前信息作出的专业判断及理由","choices":[{"label":"选项短标题","description":"选择后的创作影响","reply":"用户选择此项时送回导演的完整回答"}],"actions":[]}
+7. 仅在 discovery 第一轮的关键问题或后续明确的阶段决策时给 2-4 个真正有差异的选择。普通修改回合 choices 必须为空。不得复用最近给过的选项，也不得用近义改写伪装成新选择。
+8. 只输出一个 JSON 对象，不要 markdown：{"say":"给用户的中文回复","insight":"你基于当前信息作出的专业判断及理由","question":{"key":"稳定的英文决策键","text":"本轮唯一问题","importance":"为什么会改变结果"}|null,"choices":[{"label":"选项短标题","description":"选择后的创作影响","reply":"用户选择此项时送回导演的完整回答"}],"actions":[]}
 9. 用户明确说“直接开始/直接制作/立即开始/开拍”时，这是授权你采用专业默认值的指令：本轮必须用 update_brief 补全全部相关简报字段，不得提问，choices 为空。服务端只会把产物送到下一道明确的 UI 审核门，不会在聊天中生成视频。
 10. 完整度满只表示这一关可以往下走，不表示对话结束。任何阶段用户继续补充、改方向、改分镜时，必须吸收修改（update_brief / rewrite_shot / regenerate_concepts），并明确告诉用户“已经完整，仍可继续改”。不要因为某关已完整而拒绝交流或强迫进入下一关。
 
 阶段规则：
-- discovery：提炼用户回答并 update_brief。简报不可送审时才继续问一个问题；可送审时必须 present_brief。用户若继续补充细节，继续 update_brief，不要拒绝。
+- discovery：第一轮提炼需求、用专业默认值形成尽可能完整的简报，同时只问一个最影响结果的问题并给出 question.key；用户回答该问题后吸收答案、补齐剩余字段并 present_brief，不得再问第二个问题。用户明确授权直接做时可跳过问题。
 - brief_review：复述和修改简报。用户说“确认/好/继续/开始制作”时，如同时给出修改内容，先 update_brief；不要追问。服务端会负责进入下一道确认。用户若继续改简报，照样 update_brief。
 - concept_selection：帮助比较创意方向。用户需要在界面选择一个方向；如用户要求换一批，可 regenerate_concepts。已选方向后若用户改口，仍可比较或换一批。
 - storyboard_review：讨论和修改分镜，可 rewrite_shot。用户需要在界面确认分镜。分镜完整后仍可按用户意见改某一镜。
@@ -243,6 +244,8 @@ export function snapshotForDirector(project) {
     selectedConceptId: project.selectedConceptId || '',
     productionPlan: project.productionPlan || [],
     briefRevisions: (project.briefRevisions || []).slice(-6),
+    decisionLedger: (project.decisionLedger || []).slice(-8),
+    textArtifacts: (project.textArtifacts || []).slice(-8).map((item) => ({ id: item.id, type: item.type, title: item.title, version: item.version, summary: item.summary })),
     qualityReview: project.qualityReview || null,
     referenceImageCount: (project.referenceImages || []).length,
     finalUrl: project.finalUrl || '',
@@ -264,13 +267,18 @@ export function parseDirectorReply(raw) {
   const say = String(parsed.say || parsed.message || '').trim()
   const actions = Array.isArray(parsed.actions) ? parsed.actions : []
   const insight = String(parsed.insight || '').trim().slice(0, 1000)
+  const question = parsed.question && typeof parsed.question === 'object' ? {
+    key: String(parsed.question.key || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 80),
+    text: String(parsed.question.text || '').trim().slice(0, 300),
+    importance: String(parsed.question.importance || '').trim().slice(0, 300),
+  } : null
   const choices = (Array.isArray(parsed.choices) ? parsed.choices : []).slice(0, 4).map((item) => ({
     id: crypto.randomUUID(),
     label: String(item?.label || '').trim().slice(0, 80),
     description: String(item?.description || '').trim().slice(0, 300),
     reply: String(item?.reply || item?.label || '').trim().slice(0, 500),
   })).filter((item) => item.label && item.reply)
-  return { say: say || '我先根据你的话继续往下做。', insight, choices, actions }
+  return { say: say || '我先根据你的话继续往下做。', insight, question: question?.key && question?.text ? question : null, choices, actions }
 }
 
 const choiceText = (choice) => `${choice?.label || ''}${choice?.description || ''}`.toLowerCase().replace(/[\s，。！？、,.!?:：;；“”'"（）()\-_]/g, '')

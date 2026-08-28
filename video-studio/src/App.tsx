@@ -48,6 +48,19 @@ type Concept = {
 }
 type ProductionTask = { id: string; index: number; title: string; purpose: string; deliverable: string; owner: string }
 type BriefRevision = { id: string; fields: string[]; insight?: string; createdAt: string }
+type DecisionItem = { id: string; key: string; question: string; importance?: string; answer?: string; status: 'asked' | 'answered'; askedAt: string; answeredAt?: string }
+type TextArtifact = {
+  id: string
+  type: string
+  title: string
+  summary: string
+  version: number
+  status: 'current' | 'superseded'
+  content: Record<string, string | string[]>
+  sourceArtifactIds: string[]
+  model: string
+  createdAt: string
+}
 type PreviousRender = { id: string; url: string; filename: string; deliveredAt: string }
 type QualityReview = {
   score: number
@@ -88,6 +101,8 @@ type Project = {
   concepts: Concept[]
   productionPlan: ProductionTask[]
   briefRevisions: BriefRevision[]
+  decisionLedger: DecisionItem[]
+  textArtifacts: TextArtifact[]
   previousRenders: PreviousRender[]
   referenceImages: string[]
   qualityReview?: QualityReview | null
@@ -474,8 +489,18 @@ function artifactValue(project: Project, field: string) {
   return project.creativeBrief?.[field as keyof CreativeBrief] || ''
 }
 
+const textArtifactFieldLabels: Record<string, string> = {
+  premise: '核心表达', approach: '叙事方法', audiencePromise: '观众所得', timeline: '时间脚本', opening: '开场', development: '发展', ending: '结尾',
+  voiceover: '旁白', captions: '字幕', subject: '主体', scenes: '场景', camera: '镜头', colorLight: '光线色彩', sound: '声音',
+  assumptions: '导演假设', risks: '执行风险', nextRevision: '修订重点',
+}
+
 function CreativeArtifacts({ project, compact = false }: { project: Project; compact?: boolean }) {
   const recent = (project.briefRevisions || []).slice(-3).reverse()
+  const artifactOrder = ['director_treatment', 'script', 'visual_guide', 'production_notes']
+  const documents = (project.textArtifacts || [])
+    .filter((item) => item.status === 'current')
+    .sort((left, right) => artifactOrder.indexOf(left.type) - artifactOrder.indexOf(right.type))
   const changed = new Set(recent[0]?.fields || [])
   const filled = artifactSections.flatMap((section) => section.fields).filter((field) => artifactValue(project, field)).length
   const total = artifactSections.flatMap((section) => section.fields).length
@@ -489,6 +514,7 @@ function CreativeArtifacts({ project, compact = false }: { project: Project; com
         <dl>
           {compactFields.map((field) => <div key={field}><dt>{artifactFieldLabels[field] || field}</dt><dd>{artifactValue(project, field) || '待确认'}</dd></div>)}
         </dl>
+        {documents.slice(0, 2).map((item) => <div className="artifact-compact-document" key={item.id}><b>{item.title} V{item.version}</b><span>{item.summary}</span></div>)}
       </section>
     )
   }
@@ -512,6 +538,19 @@ function CreativeArtifacts({ project, compact = false }: { project: Project; com
           )
         })}
       </div>
+      {documents.length > 0 && <div className="artifact-documents">
+        {documents.map((item) => (
+          <article key={item.id}>
+            <header><FileText /><b>{item.title}</b><span>V{item.version}</span></header>
+            {item.summary && <p>{item.summary}</p>}
+            <dl>
+              {Object.entries(item.content).map(([key, value]) => (
+                <div key={key}><dt>{textArtifactFieldLabels[key] || key}</dt><dd>{Array.isArray(value) ? value.join('；') : value}</dd></div>
+              ))}
+            </dl>
+          </article>
+        ))}
+      </div>}
       {recent.length > 0 && <div className="artifact-revisions">
         <b>最近形成</b>
         {recent.map((revision) => <div key={revision.id}><span>{revision.fields.map((field) => artifactFieldLabels[field] || field).join(' · ')}</span>{revision.insight && <small>{revision.insight}</small>}</div>)}

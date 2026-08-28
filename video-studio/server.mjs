@@ -48,7 +48,7 @@ const SKILLS = new Set(['narrative-film', 'product-ad', 'social-koc', 'knowledge
 
 // Natural-language confirmations advance one planning gate. “Direct start” is
 // a distinct, explicit command: the director fills reasonable defaults and
-// launches a local render without turning the conversation into a questionnaire.
+// advances to the explicit review gate without turning the conversation into a questionnaire.
 export function isAdvanceIntent(value) {
   const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
   return /(?:确认|继续|下一步|开拍|开干|直接开始|开始制作(?:视频)?|直接制作|直接做|开始生成|开始做|开始吧|做吧|生成吧)$/u.test(text)
@@ -57,8 +57,8 @@ export function isAdvanceIntent(value) {
 
 export function isDirectStartIntent(value) {
   const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
-  if (/(?:不要|不能|暂不|先不|别|不想).*?(?:开拍|开始制作|开始生成)$/u.test(text)) return false
-  return /(?:直接开始(?:制作|生成)?(?:视频)?|直接制作(?:视频)?|直接做(?:视频)?|立即开始(?:制作|生成)?|现在开始(?:制作|生成)?|开拍)$/u.test(text)
+  if (/(?:不要|不能|暂不|先不|别|不想).*?(?:开拍|开始制作|开始生成|直接开始|直接制作|直接做)/u.test(text)) return false
+  return /(?:直接开始(?:制作|生成)?(?:视频)?|直接制作(?:视频)?|直接做(?:视频)?|立即开始(?:制作|生成)?|现在开始(?:制作|生成)?|开拍)/u.test(text)
 }
 
 function isShortAdvanceIntent(value) {
@@ -188,7 +188,16 @@ function demoCompletion(options = {}) {
   const prompt = String(messages.at(-1)?.content || '')
   const system = messages.filter((item) => item.role === 'system').map((item) => item.content).join('\n')
   let result
-  if (prompt.includes('资深创意制片人')) {
+  if (prompt.includes('文字创作总监')) {
+    result = {
+      artifacts: [
+        { type: 'director_treatment', title: '导演阐述', summary: '明确核心表达和观众体验', content: { premise: '从用户熟悉的真实处境切入，以一次清晰变化建立主题价值。', approach: '减少解释，用动作、空间和声音的前后反差推动叙事。', audiencePromise: '观众能在前几秒理解处境，并在结尾记住核心价值。' } },
+        { type: 'script', title: '完整脚本', summary: '首版画面、旁白与字幕结构', content: { timeline: ['0-6秒：建立主体和现实处境，快速呈现问题。', '6-12秒：通过一个可见动作触发变化，让核心价值自然出现。', '12-18秒：减少画面信息，在明确动作或品牌落点上收束。'], opening: '建立主体和现实处境，快速呈现问题。', development: '通过一个可见动作触发变化，让核心价值自然出现。', ending: '减少画面信息，在明确动作或品牌落点上收束。', voiceover: '旁白保持简短，只补充画面无法表达的信息。', captions: '字幕使用短句，核心信息一次只出现一条。' } },
+        { type: 'visual_guide', title: '视听说明', summary: '统一画面、镜头和声音语言', content: { subject: '主体外观、服装和关键道具保持连续。', scenes: '场景从现实状态过渡到更清晰有序的状态。', camera: '以稳定运动和明确景别变化为主。', colorLight: '真实光线，转折后适度提升层次与通透感。', sound: '环境音建立处境，转折处用简洁声音提示变化。' } },
+        { type: 'production_notes', title: '制作说明', summary: '记录默认判断、风险和修改入口', content: { assumptions: ['未指定项由导演按短视频可看性和模型可执行性决定'], risks: ['复杂群体动作和画面内小字可能降低生成稳定性'], nextRevision: '可直接用自然语言修改旁白、节奏、主体、场景或视觉风格。' } },
+      ],
+    }
+  } else if (prompt.includes('资深创意制片人')) {
     result = {
       insight: '这个项目最有价值的突破口，是先用一个清晰的情绪变化抓住观众，再让产品或人物自然成为变化的原因。',
       tasks: [
@@ -236,11 +245,11 @@ function demoCompletion(options = {}) {
     result = { title: '调整后的镜头', description: '按用户选择强化画面表达。', video_prompt: `根据修改要求调整：${prompt.slice(-180)}` }
   } else {
     const phase = system.match(/当前阶段：([^\n]+)/)?.[1]?.trim() || 'discovery'
-    const turnsRemaining = Number(system.match(/还需完成的发现对话轮数：(\d+)/)?.[1] || 0)
     const lastUser = String(messages.filter((item) => item.role === 'user').at(-1)?.content || '这支视频')
     let snapshot = {}
     try { snapshot = JSON.parse(system.match(/当前项目：(\{.*\})/s)?.[1] || '{}') } catch {}
     const originalGoal = snapshot.creativeBrief?.goal || snapshot.idea || lastUser
+    const firstDiscoveryTurn = phase === 'discovery' && Number(snapshot.discoveryTurns || 0) <= 1
     const brief = {
       goal: String(originalGoal).slice(0, 300), audience: '希望快速理解主题的短视频观众', platform: '短视频平台',
       story: '从现实问题进入，通过清晰转折完成情绪与主题落点', subject: '一个具有明确外观和行动目标的核心主体',
@@ -248,14 +257,15 @@ function demoCompletion(options = {}) {
       constraints: '避免复杂群体动作和画面内文字', referenceNotes: '演示模式使用通用参考策略',
     }
     result = {
-      say: phase === 'discovery' ? (turnsRemaining > 0 ? '我已经抓到核心方向。接下来需要确定哪一种表达更接近你想要的感觉。' : '信息已经足够，我把它整理成一份可评审的创作简报。') : '我建议先比较这些选择带来的成片差异，再决定下一步。',
+      say: firstDiscoveryTurn ? '我已经按专业默认值形成了初步方向。现在只需要确定最影响成片的一点：你更希望观众被真实处境打动，还是先感受到鲜明的视觉风格？' : phase === 'discovery' ? '关键方向已经明确，我会直接补齐其余判断并形成可修改方案。' : '我已经根据你的要求更新当前方案。',
       insight: '当前需求最需要先锁定的是观众感受到的变化，而不是堆叠更多画面元素。',
+      question: firstDiscoveryTurn ? { key: 'primary_expression', text: '你更希望观众被真实处境打动，还是先感受到鲜明的视觉风格？', importance: '这会改变脚本入口和镜头语言。' } : null,
       choices: [
         { label: '真实共鸣', description: '更自然、更容易让观众代入', reply: '选择真实共鸣，用生活化情境表达。' },
         { label: '电影质感', description: '更强调光影、构图和仪式感', reply: '选择电影质感，强化光影和镜头调度。' },
         { label: '轻快直接', description: '信息更快，适合短视频节奏', reply: '选择轻快直接，尽快进入核心转折。' },
       ],
-      actions: phase === 'discovery' ? [{ op: 'update_brief', brief, skill: 'custom-video', title: '演示创作项目' }, ...(turnsRemaining === 0 ? [{ op: 'present_brief' }] : [])] : [],
+      actions: phase === 'discovery' ? [{ op: 'update_brief', brief, skill: 'custom-video', title: '演示创作项目' }, ...(!firstDiscoveryTurn ? [{ op: 'present_brief' }] : [])] : [],
     }
   }
   return { choices: [{ message: { content: JSON.stringify(result) } }] }
@@ -645,6 +655,60 @@ async function makeConcepts(project) {
   return project.concepts
 }
 
+export function storeTextArtifacts(project, drafts, model = textModel) {
+  project.textArtifacts = Array.isArray(project.textArtifacts) ? project.textArtifacts : []
+  const allowedTypes = new Set(['director_treatment', 'script', 'visual_guide', 'production_notes'])
+  const created = []
+  for (const draft of Array.isArray(drafts) ? drafts : []) {
+    const type = String(draft?.type || '').trim().slice(0, 80)
+    if (!allowedTypes.has(type) || !draft?.content || typeof draft.content !== 'object') continue
+    const content = Object.fromEntries(Object.entries(draft.content).slice(0, 12).map(([key, value]) => [
+      String(key).slice(0, 80),
+      Array.isArray(value)
+        ? value.slice(0, 12).map((item) => String(item).trim().slice(0, 1000)).filter(Boolean)
+        : String(value ?? '').trim().slice(0, 4000),
+    ]))
+    const previous = [...project.textArtifacts].reverse().find((item) => item.type === type)
+    for (const item of project.textArtifacts) if (item.type === type && item.status === 'current') item.status = 'superseded'
+    const artifact = {
+      id: crypto.randomUUID(),
+      type,
+      title: String(draft.title || type).trim().slice(0, 100),
+      summary: String(draft.summary || '').trim().slice(0, 500),
+      version: Number(previous?.version || 0) + 1,
+      status: 'current',
+      content,
+      sourceArtifactIds: previous ? [previous.id] : [],
+      model,
+      createdAt: new Date().toISOString(),
+    }
+    project.textArtifacts.push(artifact)
+    created.push(artifact)
+  }
+  project.textArtifacts = project.textArtifacts.slice(-40)
+  return created
+}
+
+async function makeTextPackage(project, revisionInstruction = '') {
+  const prompt = `你是商业短视频项目的文字创作总监。根据当前创作简报，直接完成一套可供用户修改的首版文字方案，不要继续提问，不要生成视频。内容必须具体、有导演判断，避免空泛套话。完整脚本必须按总时长给出timeline数组，每项写明时间段、画面、动作、旁白或字幕，并同时总结开场、发展、结尾、旁白和字幕策略；视听说明必须覆盖主体连续性、场景、镜头、光线色彩和声音。只返回JSON：{"artifacts":[{"type":"director_treatment","title":"导演阐述","summary":"一句话摘要","content":{"premise":"核心表达","approach":"叙事方法","audiencePromise":"观众所得"}},{"type":"script","title":"完整脚本","summary":"一句话摘要","content":{"timeline":["0-6秒：画面、动作、旁白或字幕"],"opening":"开场画面和作用","development":"发展与转折","ending":"结尾落点","voiceover":"完整旁白或旁白策略","captions":"字幕内容或策略"}},{"type":"visual_guide","title":"视听说明","summary":"一句话摘要","content":{"subject":"主体连续性","scenes":"场景设计","camera":"镜头语言","colorLight":"色彩光线","sound":"声音设计"}},{"type":"production_notes","title":"制作说明","summary":"一句话摘要","content":{"assumptions":["导演采用的假设"],"risks":["执行风险"],"nextRevision":"用户可继续修改的方向"}}]}。项目：${JSON.stringify({ title: project.title, idea: project.idea, aspect: project.aspect, duration: project.duration, skill: project.skill, creativeBrief: project.creativeBrief })}。${revisionInstruction ? `用户本轮修改要求：${revisionInstruction}` : '这是首版方案。'}`
+  const request = (recovery = false) => miniFetch(`${apiHost}/v1/chat/completions`, {
+    method: 'POST',
+    body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: recovery ? `${prompt}\n上次输出不完整。请严格只返回上述JSON对象。` : prompt }], max_tokens: recovery ? 12000 : 8000, temperature: recovery ? 0.2 : 0.45, response_format: { type: 'json_object' } }),
+  })
+  let data = await request(false)
+  let parsed
+  try {
+    parsed = extractJson(completionText(data.choices?.[0]?.message))
+    if (!Array.isArray(parsed.artifacts) || parsed.artifacts.length < 4) throw new Error('文字方案产物不完整')
+  } catch {
+    data = await request(true)
+    parsed = extractJson(completionText(data.choices?.[0]?.message))
+  }
+  const created = storeTextArtifacts(project, parsed.artifacts, textModel)
+  if (created.length < 4) throw new Error('文字方案产物不完整，请重试')
+  return created
+}
+
 async function makeStoryboard(project) {
   const brief = project.creativeBrief || {}
   const concept = (project.concepts || []).find((item) => item.id === project.selectedConceptId)
@@ -809,7 +873,7 @@ async function refreshProject(project) {
   return decorateProjectProgress(project)
 }
 
-async function applyActions(project, actions, notes, artifactChanges = []) {
+async function applyActions(project, actions, notes, artifactChanges = [], options = {}) {
   for (const action of actions || []) {
     const op = action.op || action.type
     if (op === 'update_brief') {
@@ -826,6 +890,10 @@ async function applyActions(project, actions, notes, artifactChanges = []) {
       notes.push('已记下简报修改。这一关即使完整，也还可以继续对话调整')
     } else if (op === 'present_brief') {
       if (project.phase !== 'discovery') continue
+      if (options.holdDiscovery) {
+        notes.push('已先形成专业默认方案，回答当前关键问题后即可送审')
+        continue
+      }
       const readiness = briefReadiness(project)
       if (!readiness.ready) {
         notes.push(`简报还不能送审：${[...readiness.missing, readiness.turnsRemaining ? `还需 ${readiness.turnsRemaining} 轮交流` : ''].filter(Boolean).join('、')}`)
@@ -858,7 +926,7 @@ async function applyActions(project, actions, notes, artifactChanges = []) {
   // The model is allowed to recommend presenting the brief, but it must not be
   // able to keep a complete brief in an endless interview by omitting that one
   // action. The server owns the phase transition.
-  if (project.phase === 'discovery' && briefReadiness(project).ready) {
+  if (project.phase === 'discovery' && briefReadiness(project).ready && !options.holdDiscovery) {
     project.phase = 'brief_review'
     notes.push('创作简报已整理好，可确认进入创意方向')
   }
@@ -936,6 +1004,33 @@ function recordBriefRevision(project, fields, insight) {
     createdAt: new Date().toISOString(),
   })
   project.briefRevisions = project.briefRevisions.slice(-30)
+}
+
+export function answerPendingDecision(project, answer) {
+  project.decisionLedger = Array.isArray(project.decisionLedger) ? project.decisionLedger : []
+  const pending = [...project.decisionLedger].reverse().find((item) => item.status === 'asked')
+  if (!pending || !String(answer || '').trim()) return null
+  pending.answer = String(answer).trim().slice(0, 1000)
+  pending.status = 'answered'
+  pending.answeredAt = new Date().toISOString()
+  return pending
+}
+
+export function recordDirectorQuestion(project, question) {
+  if (!question?.key || !question?.text) return null
+  project.decisionLedger = Array.isArray(project.decisionLedger) ? project.decisionLedger : []
+  if (project.decisionLedger.some((item) => item.key === question.key)) return null
+  const item = {
+    id: crypto.randomUUID(),
+    key: question.key,
+    question: question.text,
+    importance: question.importance || '',
+    status: 'asked',
+    askedAt: new Date().toISOString(),
+  }
+  project.decisionLedger.push(item)
+  project.decisionLedger = project.decisionLedger.slice(-30)
+  return item
 }
 
 async function reviewStoryboard(project) {
@@ -1218,8 +1313,9 @@ app.post('/api/projects/:id/generate', async (req, res) => {
   } catch (error) { res.status(error.status || 502).json({ error: error.message }) }
 })
 
-async function completeDirectorTurn(project, history) {
+async function completeDirectorTurn(project, history, options = {}) {
   const projectSnapshot = snapshotForDirector(project)
+  const needsDiscoveryQuestion = project.phase === 'discovery' && Number(project.discoveryTurns || 0) <= 1 && !options.directStart
   const baseMessages = [
     { role: 'system', content: directorSystemFor(project) },
     { role: 'system', content: `当前项目：${JSON.stringify(projectSnapshot)}` },
@@ -1234,10 +1330,10 @@ async function completeDirectorTurn(project, history) {
       messages: recovery ? [
         {
           role: 'system',
-          content: `你是星绘视频工坊的创作导演。上一次回复没有完整输出，现在根据当前项目和用户最后一句话重新完成本轮访谈。
+          content: `你是星绘视频工坊的创作导演。上一次回复没有完整输出，现在根据当前项目和用户最后一句话重新完成本轮工作。
 当前项目：${JSON.stringify(projectSnapshot)}
-要求：先回应用户刚才的决定，再给出专业判断，只追问一个最有价值的问题，并提供 2-4 个有真实差异的选择。discovery 阶段可用 update_brief 记录本轮新增信息，信息齐全时可用 present_brief；不得生成分镜或视频。
-严格只输出一个简短 JSON 对象：{"say":"不超过240字","insight":"不超过180字","choices":[{"label":"不超过12字","description":"不超过60字","reply":"以用户口吻写出的完整选择，不超过100字"}],"actions":[]}`,
+要求：先回应用户刚才的决定，再给出专业判断。${needsDiscoveryQuestion ? '这是 discovery 第一轮，只追问一个最有价值的问题，输出 question 和 2-4 个有真实差异的选择。' : '关键问题已经回答，不得继续追问，question 为 null，choices 为空，并补齐简报送审。'}不得生成分镜或视频。
+严格只输出一个简短 JSON 对象：{"say":"不超过240字","insight":"不超过180字","question":{"key":"英文决策键","text":"唯一问题","importance":"影响"}|null,"choices":[],"actions":[]}`,
         },
         history.at(-1) || { role: 'user', content: '请继续当前创作访谈。' },
       ] : [...baseMessages, ...history],
@@ -1247,7 +1343,9 @@ async function completeDirectorTurn(project, history) {
   const parseComplete = (raw) => {
     const value = extractJson(raw)
     const choices = Array.isArray(value.choices) ? value.choices.filter((item) => item?.label && (item?.reply || item?.label)) : []
-    if (!String(value.say || value.message || '').trim() || !String(value.insight || '').trim() || choices.length < 2) {
+    const question = value.question && typeof value.question === 'object' ? value.question : null
+    if (!String(value.say || value.message || '').trim() || !String(value.insight || '').trim()
+      || (needsDiscoveryQuestion && (!question?.key || !question?.text || choices.length < 2))) {
       throw new Error('导演回复结构不完整')
     }
     return parseDirectorReply(JSON.stringify(value))
@@ -1286,6 +1384,7 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     project = projectOr404(req.params.id)
     rollbackProject = structuredClone(project)
     if (!PROJECT_PHASES.has(project.phase)) project.phase = 'discovery'
+    const phaseAtStart = project.phase
     const text = String(req.body.message || '').trim()
     const image = req.body.image
     const requestedAttachments = (Array.isArray(req.body.attachmentIds) ? req.body.attachmentIds : [])
@@ -1314,7 +1413,10 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       attachments: attachmentFiles.map((filename) => imageAttachment(project.id, filename)),
       ts: new Date().toISOString(),
     })
-    if (project.phase === 'discovery' && text) project.discoveryTurns = Number(project.discoveryTurns || 0) + 1
+    if (project.phase === 'discovery' && (text || attachmentFiles.length)) {
+      project.discoveryTurns = Number(project.discoveryTurns || 0) + 1
+      if (project.discoveryTurns > 1 && text) answerPendingDecision(project, text)
+    }
     let initialGoalAdded = false
     if (!project.idea && text) {
       project.idea = text
@@ -1324,6 +1426,7 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     store.save(project)
     userTurnPersisted = true
     const directStart = isDirectStartIntent(text)
+    const holdDiscovery = project.phase === 'discovery' && Number(project.discoveryTurns || 0) <= 1 && !directStart
 
     // A short confirmation should never be sent back through the interview
     // model. It is a command for the current planning gate, not new creative
@@ -1338,11 +1441,11 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     }
 
     const history = historyForDirector(project.messages, attachmentFiles.map((filename) => store.imageDataUrl(project.id, filename)))
-    const parsed = await completeDirectorTurn(project, history)
+    const parsed = await completeDirectorTurn(project, history, { directStart })
     const notes = []
     const artifactChanges = initialGoalAdded ? ['goal'] : []
     try {
-      await applyActions(project, parsed.actions, notes, artifactChanges)
+      await applyActions(project, parsed.actions, notes, artifactChanges, { holdDiscovery })
     } catch (actionError) {
       notes.push(actionError.message)
     }
@@ -1354,8 +1457,21 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       artifactChanges.push(...result.changed)
       reply = result.say
     }
+    if (project.phase === 'discovery' && Number(project.discoveryTurns || 0) > 1) {
+      artifactChanges.push(...applyDirectorDefaults(project))
+      project.phase = 'brief_review'
+      notes.push('关键问题已经回答，其余非关键项已采用专业默认值')
+    }
+    const recordedQuestion = holdDiscovery ? recordDirectorQuestion(project, parsed.question) : null
+    const shouldBuildTextPackage = project.phase === 'brief_review'
+      && (phaseAtStart === 'discovery' || (phaseAtStart === 'brief_review' && !isShortAdvanceIntent(text)))
+    if (shouldBuildTextPackage) {
+      await makeTextPackage(project, phaseAtStart === 'brief_review' ? text : '')
+      notes.push('导演阐述、完整脚本、视听说明和制作说明已生成在右侧')
+      reply = [reply, notes.at(-1) + '。'].filter(Boolean).join('\n')
+    }
     const previousChoices = project.messages.filter((item) => item.role === 'assistant').slice(-6).flatMap((item) => item.choices || [])
-    const choices = dedupeDirectorChoices(parsed.choices, previousChoices)
+    const choices = recordedQuestion ? dedupeDirectorChoices(parsed.choices, previousChoices) : []
     recordBriefRevision(project, artifactChanges, parsed.insight)
     project.messages.push({ role: 'assistant', content: reply, insight: parsed.insight, choices, ts: new Date().toISOString() })
     store.save(project)

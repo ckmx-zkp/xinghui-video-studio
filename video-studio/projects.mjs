@@ -37,6 +37,8 @@ export function createProjectStore(root) {
     concepts: [],
     productionPlan: [],
     briefRevisions: [],
+    decisionLedger: [],
+    textArtifacts: [],
     previousRenders: [],
     referenceImages: [],
     selectedConceptId: '',
@@ -65,6 +67,12 @@ export function createProjectStore(root) {
       briefRevisions: (Array.isArray(project?.briefRevisions) ? project.briefRevisions : []).slice(-30).map((item) => ({
         ...item,
         fields: Array.isArray(item?.fields) ? item.fields : [],
+      })),
+      decisionLedger: (Array.isArray(project?.decisionLedger) ? project.decisionLedger : []).slice(-30),
+      textArtifacts: (Array.isArray(project?.textArtifacts) ? project.textArtifacts : []).slice(-40).map((item) => ({
+        ...item,
+        content: item?.content && typeof item.content === 'object' ? item.content : {},
+        sourceArtifactIds: Array.isArray(item?.sourceArtifactIds) ? item.sourceArtifactIds : [],
       })),
       previousRenders: Array.isArray(project?.previousRenders) ? project.previousRenders : [],
       referenceImages: Array.isArray(project?.referenceImages) ? project.referenceImages : [],
