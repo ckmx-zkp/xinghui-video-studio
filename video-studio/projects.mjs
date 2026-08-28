@@ -48,6 +48,8 @@ export function createProjectStore(root) {
     briefConfirmedAt: '',
     storyboardConfirmedAt: '',
     deliveredAt: '',
+    briefVersion: 0,
+    storyboardBriefVersion: 0,
     shots: [],
     messages: [],
     finalUrl: '',
@@ -84,6 +86,9 @@ export function createProjectStore(root) {
       })),
     }
     if (!next.creativeBrief.goal && next.idea) next.creativeBrief.goal = next.idea
+    next.briefVersion = Number(next.briefVersion || 0)
+    next.storyboardBriefVersion = Number(next.storyboardBriefVersion || 0)
+    next.briefStale = next.shots.length > 0 && next.briefVersion !== next.storyboardBriefVersion
     next.processProgress = buildProcessProgress(next)
     return next
   }

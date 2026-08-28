@@ -76,6 +76,13 @@ function projectOr404(id) {
   return project
 }
 
+// store.save() normalizes into a fresh object, so callers keep their pre-save
+// snapshot. Any mutation that moves the brief versions must refresh the stale
+// flag on the caller's object right away.
+function markBriefStale(project) {
+  project.briefStale = (project.shots?.length || 0) > 0 && Number(project.briefVersion || 0) !== Number(project.storyboardBriefVersion || 0)
+}
+
 function applyBriefPatch(project, action) {
   const patch = action.brief && typeof action.brief === 'object' ? action.brief : {}
   project.creativeBrief = project.creativeBrief || {}
@@ -109,6 +116,10 @@ function applyBriefPatch(project, action) {
     project.skill = action.skill
   }
   if (project.creativeBrief.goal) project.idea = project.creativeBrief.goal
+  if (changed.length) {
+    project.briefVersion = Number(project.briefVersion || 0) + 1
+    markBriefStale(project)
+  }
   return changed
 }
 
@@ -721,6 +732,8 @@ export function invalidateDownstreamForStandards(project) {
   project.finalFilename = ''
   project.finalError = ''
   project.deliveredAt = ''
+  project.storyboardBriefVersion = Number(project.briefVersion || 0)
+  markBriefStale(project)
   project.standardRevision = Number(project.standardRevision || 0) + 1
   project.standardUpdatedAt = new Date().toISOString()
   return project
@@ -795,6 +808,8 @@ async function makeStoryboard(project, revisionInstruction = '') {
     imageFile: previous[index]?.imageFile || project.referenceImages?.[index] || (index === 0 ? project.pendingImage : '') || '',
   }))
   if (project.pendingImage) project.pendingImage = ''
+  project.storyboardBriefVersion = Number(project.briefVersion || 0)
+  markBriefStale(project)
   return project
 }
 
@@ -815,6 +830,10 @@ async function reviseStoryboard(project, action = {}) {
     project.storyboardRevisionInstruction = instruction
     changed.push('storyboard')
   }
+  // The four production-standard documents must describe the storyboard under
+  // review, so a structural revision rebuilds them from the latest brief too.
+  const briefAffecting = changed.some((field) => BRIEF_KEYS.includes(field) || ['aspect', 'duration', 'title', 'shotCount'].includes(field))
+  if (briefAffecting || instruction) await makeTextPackage(project, instruction)
   await makeStoryboard(project, instruction)
   project.phase = 'storyboard_review'
   project.storyboardConfirmedAt = ''
@@ -955,21 +974,35 @@ async function refreshProject(project) {
   return decorateProjectProgress(project)
 }
 
-async function applyActions(project, actions, notes, artifactChanges = [], options = {}) {
+export async function applyActions(project, actions, notes, artifactChanges = [], options = {}) {
   for (const action of actions || []) {
     const op = action.op || action.type
     if (op === 'update_brief') {
       if (['generating', 'delivery_review', 'delivered'].includes(project.phase)) {
-        notes.push('成片已经在进行或完成，简报改动已记下，但不会打断当前出片')
-        artifactChanges.push(...applyBriefPatch(project, action))
+        const changed = applyBriefPatch(project, action)
+        artifactChanges.push(...changed)
+        if (changed.length) {
+          notes.push('成片已经在进行或完成：简报改动已记下，重新开拍时会先按新简报重建分镜与制作标准，当前成片会保留为历史版本')
+        } else {
+          notes.push('成片已经在进行或完成，本轮没有需要更新的简报内容')
+        }
         continue
       }
       if (!['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate'].includes(project.phase)) {
         notes.push('当前阶段不能修改创作简报')
         continue
       }
-      artifactChanges.push(...applyBriefPatch(project, action))
-      notes.push('已记下简报修改。这一关即使完整，也还可以继续对话调整')
+      const changed = applyBriefPatch(project, action)
+      artifactChanges.push(...changed)
+      const briefAffecting = changed.some((field) => BRIEF_KEYS.includes(field) || ['aspect', 'duration'].includes(field))
+      if (briefAffecting && ['quality_review', 'ready_to_generate'].includes(project.phase)) {
+        project.phase = 'storyboard_review'
+        project.storyboardConfirmedAt = ''
+        project.qualityReview = null
+        notes.push('简报已更新，已确认的分镜基于旧版简报，请重新确认分镜或让导演按新简报返修')
+      } else {
+        notes.push('已记下简报修改。这一关即使完整，也还可以继续对话调整')
+      }
     } else if (op === 'present_brief') {
       if (project.phase !== 'discovery') continue
       if (options.holdDiscovery) {
@@ -1412,11 +1445,19 @@ app.post('/api/projects/:id/approve-delivery', (req, res) => {
   } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
 })
 
-app.post('/api/projects/:id/prepare-reshoot', (req, res) => {
+app.post('/api/projects/:id/prepare-reshoot', async (req, res) => {
   try {
     const project = projectOr404(req.params.id)
     if (!['delivery_review', 'delivered'].includes(project.phase)) return res.status(409).json({ error: '当前项目还没有可重拍的成片版本' })
     if (!project.shots?.length) return res.status(409).json({ error: '当前项目没有可复用的分镜' })
+    // A brief edited after delivery must drive a fresh storyboard instead of a
+    // silent re-render of the old one. Source assets stay in place either way.
+    if (Number(project.briefVersion || 0) !== Number(project.storyboardBriefVersion || 0)) {
+      await reviseStoryboard(project, { instruction: '创作简报在成片交付后有更新，请严格按最新创作简报重建分镜，保持总时长与画幅一致。' })
+      recordBriefRevision(project, ['storyboard'], '重新开拍前先按更新后的简报重建了分镜与制作标准。')
+      store.save(project)
+      return res.json(project)
+    }
     if (project.finalUrl || project.finalFilename) {
       project.previousRenders = project.previousRenders || []
       project.previousRenders.push({

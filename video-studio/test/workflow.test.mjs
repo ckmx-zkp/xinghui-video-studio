@@ -4,15 +4,52 @@ import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
-import { answerPendingDecision, app, applyDirectorDefaults, comfyStageForNode, currentTextStandards, historyForDirector, invalidateDownstreamForStandards, isAdvanceIntent, isDirectStartIntent, recordDirectorQuestion, resolveRuntimeModes, storeTextArtifacts } from '../server.mjs'
 
-const here = path.dirname(fileURLToPath(import.meta.url))
-const root = path.resolve(here, '../..')
+// server.mjs reads its runtime modes at import time, so the demo switch must be
+// set before the dynamic import below. Director replies in tests therefore come
+// from the fixed demo generator and never reach the real MiniMax API.
+let app
+let answerPendingDecision
+let applyActions
+let applyDirectorDefaults
+let comfyStageForNode
+let currentTextStandards
+let historyForDirector
+let invalidateDownstreamForStandards
+let isAdvanceIntent
+let isDirectStartIntent
+let recordDirectorQuestion
+let resolveRuntimeModes
+let storyboardShotCount
+let storyboardShotDurations
+let storeTextArtifacts
+
+let root
 let server
 let baseUrl
 const createdProjects = []
 
 before(async () => {
+  process.env.STUDIO_DIRECTOR_DEMO_MODE = '1'
+  ;({
+    app,
+    answerPendingDecision,
+    applyActions,
+    applyDirectorDefaults,
+    comfyStageForNode,
+    currentTextStandards,
+    historyForDirector,
+    invalidateDownstreamForStandards,
+    isAdvanceIntent,
+    isDirectStartIntent,
+    recordDirectorQuestion,
+    resolveRuntimeModes,
+    storyboardShotCount,
+    storyboardShotDurations,
+    storeTextArtifacts,
+  } = await import('../server.mjs'))
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  root = path.resolve(here, '../..')
   server = app.listen(0, '127.0.0.1')
   await new Promise((resolve, reject) => {
     server.once('listening', resolve)
@@ -176,6 +213,12 @@ describe('director workflow contract', () => {
     assert.deepEqual(resolveShotList('pending', project).map((item) => item.index), [1, 2])
     assert.deepEqual(resolveShotList([1, 3], project).map((item) => item.index), [0, 2])
   })
+
+  it('keeps a structural revision as one exact-duration shot', () => {
+    const project = { duration: 10, storyboardShotCount: 1 }
+    assert.equal(storyboardShotCount(project), 1)
+    assert.deepEqual(storyboardShotDurations(project, 1), [10])
+  })
 })
 
 describe('runtime mode isolation', () => {
@@ -338,5 +381,103 @@ describe('server phase gates', () => {
     assert.equal(scripts[1].version, 2)
     assert.equal(scripts[1].model, 'user')
     assert.deepEqual(scripts[1].content.timeline, ['0-6秒：新版画面', '6-12秒：新版转折'])
+  })
+})
+
+describe('brief and storyboard consistency', () => {
+  const fullBrief = {
+    goal: '制作新品广告', audience: '城市通勤人群', platform: '短视频平台', story: '从嘈杂通勤切换到安静沉浸体验',
+    subject: '一名年轻通勤者和无线耳机', visualStyle: '克制、现代、真实摄影', tone: '先紧张后放松',
+    audio: '环境音为主', constraints: '避免复杂群像', referenceNotes: '',
+  }
+
+  it('records brief revisions after delivery without resetting the phase or assets', async () => {
+    const project = {
+      phase: 'delivered',
+      briefVersion: 3,
+      storyboardBriefVersion: 3,
+      creativeBrief: { ...fullBrief, story: '旧故事主线' },
+      shots: [{ id: 's1', index: 0, status: 'Success', filename: 'shot-1.mp4' }],
+      messages: [],
+    }
+    const notes = []
+    await applyActions(project, [{ op: 'update_brief', brief: { story: '新故事主线' } }], notes)
+    assert.equal(project.creativeBrief.story, '新故事主线')
+    assert.equal(project.briefVersion, 4)
+    assert.notEqual(project.briefVersion, project.storyboardBriefVersion)
+    assert.equal(project.phase, 'delivered')
+    assert.equal(project.shots.length, 1)
+    assert.match(notes.join(''), /重建分镜/)
+  })
+
+  it('invalidates storyboard confirmation when the brief changes before generation', async () => {
+    const project = {
+      phase: 'ready_to_generate',
+      briefVersion: 2,
+      storyboardBriefVersion: 2,
+      storyboardConfirmedAt: 'yes',
+      qualityReview: { score: 90 },
+      creativeBrief: { ...fullBrief, story: '旧故事' },
+      shots: [{ id: 's1', index: 0, status: 'ready' }],
+      messages: [],
+    }
+    const notes = []
+    await applyActions(project, [{ op: 'update_brief', brief: { story: '新故事' } }], notes)
+    assert.equal(project.phase, 'storyboard_review')
+    assert.equal(project.storyboardConfirmedAt, '')
+    assert.equal(project.qualityReview, null)
+    assert.equal(project.briefVersion, 3)
+    assert.match(notes.join(''), /旧版简报/)
+  })
+
+  it('keeps the storyboard confirmed for engine-only changes', async () => {
+    const project = {
+      phase: 'ready_to_generate',
+      briefVersion: 2,
+      storyboardBriefVersion: 2,
+      storyboardConfirmedAt: 'yes',
+      creativeBrief: { ...fullBrief },
+      shots: [{ id: 's1', index: 0, status: 'ready' }],
+      messages: [],
+    }
+    const notes = []
+    await applyActions(project, [{ op: 'update_brief', engine: 'cloud' }], notes)
+    assert.equal(project.engine, 'cloud')
+    assert.equal(project.phase, 'ready_to_generate')
+    assert.equal(project.storyboardConfirmedAt, 'yes')
+    assert.equal(project.briefVersion, 3)
+  })
+
+  it('rebuilds the storyboard and standards from the updated brief before a reshoot', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    const delivered = {
+      ...created,
+      phase: 'delivered',
+      deliveredAt: '2026-08-28T00:00:00.000Z',
+      finalUrl: '/media/final.mp4',
+      finalFilename: 'final.mp4',
+      duration: 18,
+      briefVersion: 2,
+      storyboardBriefVersion: 1,
+      selectedConceptId: 'c1',
+      concepts: [{ id: 'c1', title: '方向A', logline: '一句话故事成立', narrative: '完整叙事', visualHook: '记忆点', ending: '收束' }],
+      shots: [{ id: 'shot-1', index: 0, title: '开场', description: '主体入场', video_prompt: '旧版提示词', status: 'Success', taskId: 'task-1', filename: 'shot-1.mp4' }],
+    }
+    fs.writeFileSync(file, JSON.stringify(delivered, null, 2))
+
+    const response = await fetch(`${baseUrl}/api/projects/${created.id}/prepare-reshoot`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    const project = await response.json()
+    assert.equal(project.phase, 'storyboard_review')
+    assert.equal(project.previousRenders.length, 1)
+    assert.equal(project.shots.length, 3)
+    assert.notEqual(project.shots[0].video_prompt, '旧版提示词')
+    assert.equal(project.storyboardBriefVersion, project.briefVersion)
+    assert.equal(project.briefStale, false)
+    assert.match(project.storyboardRevisionInstruction, /最新创作简报/)
+    assert.ok(project.textArtifacts.filter((item) => item.type === 'script').length >= 1)
+    assert.ok(project.textArtifacts.length >= 4)
   })
 })

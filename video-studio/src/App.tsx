@@ -5,6 +5,7 @@ import './App.css'
 type Shot = {
   id: string
   index: number
+  duration?: number
   title: string
   description: string
   video_prompt: string
@@ -115,6 +116,11 @@ type Project = {
   stageInsight?: string
   stageChoices?: DirectorChoice[]
   selectedConceptId?: string
+  storyboardShotCount?: number
+  storyboardRevisionInstruction?: string
+  briefVersion?: number
+  storyboardBriefVersion?: number
+  briefStale?: boolean
   shots: Shot[]
   messages: Message[]
   finalUrl?: string
@@ -451,6 +457,7 @@ function App() {
                 <p>
                   {phaseLabel[project?.phase || 'discovery']} · {project?.aspect} · {project?.engine === 'cloud' ? '云端成片' : '本机草稿'}
                   {project?.processProgress ? ` · 完整度 ${project.processProgress.overallCompleteness}%` : ''}
+                  {project?.briefStale ? ' · 简报已更新，分镜待重建' : ''}
                 </p>
               </div>
               {project?.processProgress && (
@@ -472,7 +479,7 @@ function App() {
                     <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => attachShotImage(shot.index, event.target.files?.[0])} />
                   </label>
                   <div className="shot-body">
-                    <div className="shot-time">S{shot.index + 1} · 00:{String(shot.index * 6).padStart(2, '0')}–00:{String((shot.index + 1) * 6).padStart(2, '0')}</div>
+                    <div className="shot-time">S{shot.index + 1} · 00:{String((project?.shots || []).slice(0, shot.index).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')}–00:{String((project?.shots || []).slice(0, shot.index + 1).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')} · {shot.duration || 6} 秒</div>
                     <h3>{shot.title}</h3>
                     <p>{shot.description}</p>
                     <footer><span>{shot.imageFile ? '已绑参考图' : '点左侧上传此镜参考图'}</span><StatusText value={shot.status} /></footer>
@@ -569,7 +576,7 @@ function CreativeArtifacts({ project, compact = false, busy, onSave }: { project
           <legend>项目与制作设置</legend>
           <label><span>项目标题</span><input value={editDraft.settings.title} onChange={(event) => setSetting('title', event.target.value)} /></label>
           <label><span>画幅</span><select value={editDraft.settings.aspect} onChange={(event) => setSetting('aspect', event.target.value)}><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option></select></label>
-          <label><span>时长</span><select value={editDraft.settings.duration} onChange={(event) => setSetting('duration', Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => (index + 1) * 6).map((value) => <option value={value} key={value}>{value} 秒</option>)}</select></label>
+          <label><span>时长</span><select value={editDraft.settings.duration} onChange={(event) => setSetting('duration', Number(event.target.value))}>{[6, 10, ...Array.from({ length: 9 }, (_, index) => (index + 2) * 6)].map((value) => <option value={value} key={value}>{value} 秒</option>)}</select></label>
           <label><span>生成方式</span><select value={editDraft.settings.engine} onChange={(event) => setSetting('engine', event.target.value)}><option value="local">本机生成</option><option value="cloud">云端成片</option></select></label>
           <label><span>创作方法</span><select value={editDraft.settings.skill} onChange={(event) => setSetting('skill', event.target.value)}>{Object.entries(skillLabel).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
         </fieldset>
@@ -799,7 +806,7 @@ function WorkflowPanel({ project, busy, onAction }: {
         {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
         <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-delivery')}><Check />确认交付</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改</button>
-        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('prepare-reshoot')}><RotateCcw />基于当前分镜重新开拍</button>
+        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('prepare-reshoot')}><RotateCcw />{project.briefStale ? '按更新后的简报重建并重新开拍' : '基于当前分镜重新开拍'}</button>
       </section>
     )
   }
@@ -810,7 +817,8 @@ function WorkflowPanel({ project, busy, onAction }: {
       <p>{project.title}</p>
       {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
       {project.previousRenders.length > 0 && <p className="workflow-hint">已保留 {project.previousRenders.length} 个历史成片版本</p>}
-      <button className="workflow-primary" disabled={busy} onClick={() => onAction('prepare-reshoot')}><RotateCcw />基于当前分镜重新开拍</button>
+      {project.briefStale && <p className="workflow-hint">简报在交付后有更新，重新开拍会先按新简报重建分镜与制作标准。</p>}
+      <button className="workflow-primary" disabled={busy} onClick={() => onAction('prepare-reshoot')}><RotateCcw />{project.briefStale ? '按更新后的简报重建并重新开拍' : '基于当前分镜重新开拍'}</button>
     </section>
   )
 }
@@ -898,7 +906,13 @@ function GenerationProgress({ shots }: { shots: Shot[] }) {
 function ProductionCanvas({ project }: { project: Project }) {
   return (
     <section className="production-canvas">
-      <div className="workflow-title"><Sparkles />制作画布</div>
+      <div className="workflow-title"><Sparkles />当前待审版本</div>
+      <div className="current-version">
+        <b>{project.shots.length} 个镜头 · {project.duration} 秒</b>
+        <p>只有这一版分镜会在审核通过后进入生成；旧制作计划不会覆盖它。</p>
+        {project.storyboardRevisionInstruction && <small>最新返修：{project.storyboardRevisionInstruction}</small>}
+      </div>
+      <div className="workflow-title production-plan-title"><Sparkles />制作计划</div>
       <div className="production-nodes">
         {project.productionPlan.map((task, index) => (
           <article key={task.id}>
