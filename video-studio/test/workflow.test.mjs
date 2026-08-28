@@ -31,6 +31,8 @@ const createdProjects = []
 
 before(async () => {
   process.env.STUDIO_DIRECTOR_DEMO_MODE = '1'
+  process.env.STUDIO_LOGIN_PASSWORDS = 'test-pass,1q1qwwww'
+  process.env.STUDIO_COOKIE_SECRET = 'test-secret'
   ;({
     app,
     answerPendingDecision,
@@ -677,5 +679,24 @@ describe('engine switching and asset library', () => {
     const material = assets.find((item) => item.id === `${created.id}:material:old-1`)
     assert.ok(material)
     assert.match(material.title, /本地素材/)
+  })
+
+  it('issues a 30-day cookie only for an accepted password', async () => {
+    const status = await fetch(`${baseUrl}/api/auth/status`).then((response) => response.json())
+    assert.equal(status.loginEnabled, true)
+    const wrong = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'nope' }),
+    })
+    assert.equal(wrong.status, 401)
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: '1q1qwwww' }),
+    })
+    assert.equal(login.status, 200)
+    const cookie = (login.headers.get('set-cookie') || '').match(/kunpeng_studio=([a-f0-9]{64})/)
+    assert.ok(cookie, 'login should set the signed cookie')
+    const denied = await fetch(`${baseUrl}/api/auth/verify`)
+    assert.equal(denied.status, 401)
+    const verified = await fetch(`${baseUrl}/api/auth/verify`, { headers: { Cookie: `kunpeng_studio=${cookie[1]}` } })
+    assert.equal(verified.status, 200)
   })
 })

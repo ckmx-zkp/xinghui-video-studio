@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import multer from 'multer'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore } from './projects.mjs'
 import { briefReadiness, completionText, dedupeDirectorChoices, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector, storyboardMatchesBrief, storyboardShotCount, storyboardShotDurations } from './director.mjs'
@@ -1917,6 +1918,31 @@ app.post('/api/output/open', (_req, res) => {
 })
 
 const dist = path.join(here, 'dist')
+// Persistent sign-in: nginx keeps basic auth as the fallback, while a signed
+// cookie lets regular visitors skip the password prompt for 30 days.
+const loginPasswords = String(process.env.STUDIO_LOGIN_PASSWORDS || '').split(',').map((item) => item.trim()).filter(Boolean)
+const cookieSecret = process.env.STUDIO_COOKIE_SECRET || ''
+const AUTH_COOKIE = 'kunpeng_studio'
+const studioToken = () => (cookieSecret ? createHmac('sha256', cookieSecret).update('kunpeng-studio-v1').digest('hex') : '')
+
+app.get('/api/auth/status', (_req, res) => {
+  res.json({ loginEnabled: Boolean(loginPasswords.length && cookieSecret) })
+})
+
+app.post('/api/auth/login', (req, res) => {
+  if (!loginPasswords.length || !cookieSecret) return res.status(404).json({ error: '免输入登录未启用' })
+  if (!loginPasswords.includes(String(req.body.password || ''))) return res.status(401).json({ error: '密码不正确' })
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${studioToken()}; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax`)
+  res.json({ ok: true })
+})
+
+app.get('/api/auth/verify', (req, res) => {
+  if (!loginPasswords.length || !cookieSecret) return res.json({ ok: true, loginEnabled: false })
+  const match = String(req.headers.cookie || '').match(new RegExp(`(?:^|;\\s*)${AUTH_COOKIE}=([a-f0-9]{64})`))
+  if (match && match[1] === studioToken()) return res.json({ ok: true, loginEnabled: true })
+  res.status(401).json({ ok: false, loginEnabled: true })
+})
+
 if (fs.existsSync(dist)) {
   app.use(express.static(dist))
   app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))

@@ -200,6 +200,10 @@ function App() {
   const [narrationDraft, setNarrationDraft] = useState('')
   const [narrationVoice, setNarrationVoice] = useState('presenter_female')
   const [narrationBusy, setNarrationBusy] = useState(false)
+  const [authCard, setAuthCard] = useState(false)
+  const [authPassword, setAuthPassword] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
   const busyRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -226,6 +230,33 @@ function App() {
     window.addEventListener('focus', onFocus)
     return () => { window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
   }, [])
+
+  // Offer the 30-day password-free login when the server enables it and no
+  // valid cookie exists yet. Basic auth keeps working as the fallback.
+  useEffect(() => {
+    api<{ loginEnabled: boolean }>('/api/auth/status').then((info) => {
+      if (!info.loginEnabled) return
+      // oxlint-disable-next-line react/set-state-in-effect
+      api<{ ok: boolean }>('/api/auth/verify').then((result) => {
+        if (!result.ok) setAuthCard(true)
+      }).catch(() => setAuthCard(true))
+    }).catch(() => {})
+  }, [])
+
+  const submitLogin = async () => {
+    if (!authPassword.trim() || authBusy) return
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      await api<{ ok: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: authPassword }) })
+      setAuthCard(false)
+      setAuthPassword('')
+    } catch (item) {
+      setAuthError(item instanceof Error ? item.message : '登录失败')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (!inflight || !project?.id) return
@@ -445,6 +476,18 @@ function App() {
 
   return (
     <div className="app-shell chat-app">
+      {authCard && (
+        <div className="auth-overlay">
+          <form className="auth-card" onSubmit={(event) => { event.preventDefault(); submitLogin() }}>
+            <Sparkles size={22} />
+            <b>鲲鹏的视频制作工坊</b>
+            <p>输入一次访问密码，30 天内打开不再需要输入。</p>
+            <input type="password" value={authPassword} autoFocus onChange={(event) => setAuthPassword(event.target.value)} placeholder="访问密码" />
+            {authError && <small>{authError}</small>}
+            <button className="primary" type="submit" disabled={authBusy || !authPassword.trim()}>{authBusy ? '验证中…' : '记住登录 30 天'}</button>
+          </form>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand"><Sparkles size={25} fill="currentColor" /><strong>鲲鹏的视频制作工坊</strong><small>（个人用）</small></div>
         <div className="connections">

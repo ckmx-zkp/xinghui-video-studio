@@ -73,3 +73,11 @@
 .history-delete{border:1px solid #f0c9c9;background:#fff5f5;color:#bb3636;border-radius:8px;width:36px;height:36px;display:grid;place-items:center;cursor:pointer}
 .history-delete svg{width:15px}
 .history-delete:hover{background:#ffe9e9}
+.auth-overlay{position:fixed;inset:0;z-index:40;display:grid;place-items:center;background:rgba(28,29,32,.5);backdrop-filter:blur(3px)}
+.auth-card{width:min(360px,calc(100vw - 32px));background:#fff;border-radius:14px;padding:26px 24px;display:flex;flex-direction:column;gap:10px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.18);align-items:stretch}
+.auth-card svg{width:26px;height:26px;color:var(--accent);margin:0 auto}
+.auth-card b{font-size:17px}
+.auth-card p{margin:0 0 6px;color:#696b72;font-size:12px;line-height:1.6}
+.auth-card input{height:44px;border:1.5px solid var(--accent);border-radius:9px;padding:0 12px;font-size:14px;text-align:center}
+.auth-card small{color:#bb3636;font-size:12px}
+.auth-card button.primary{width:100%}
