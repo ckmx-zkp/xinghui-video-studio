@@ -30,7 +30,7 @@
 | 参考图（可选） | 上传到 ComfyUI 后作为 `first_frame` |
 | 16:9 / 9:16 / 1:1 | 864×480 / 480×864 / 640×640（0.4MP） |
 | 单镜头 6 秒 | `length=141`（24fps 对齐 17k+5） |
-| 采样 | Turbo LoRA v4 + 6 步 `simple`，`low_vram=true` |
+| 采样 | Turbo LoRA v4 + 6 步 `simple`，`low_vram=false`（bypass） |
 | CLIP 类型 | `minimax`（不是 `wan`） |
 
 使用的文件：

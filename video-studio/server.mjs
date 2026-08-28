@@ -96,7 +96,7 @@ function applyBriefPatch(project, action) {
     project.aspect = action.aspect
   }
   const duration = Number(action.duration)
-  if (duration >= 6 && duration <= 60 && duration % 6 === 0) {
+  if (Number.isInteger(duration) && duration >= 5 && duration <= 60) {
     if (project.duration !== duration) changed.push('duration')
     project.duration = duration
   }
@@ -345,7 +345,7 @@ async function comfyJson(pathname, options = {}) {
 function buildH3Prompt({ prompt, width, height, length, imageName, seed }) {
   const graph = {
     '1': { class_type: 'UnetLoaderGGUF', inputs: { unet_name: 'minimax_h3_fl2va_pruned-Q4_K.gguf' } },
-    '2': { class_type: 'MiniMaxH3TurboLoRA', inputs: { model: ['1', 0], lora_name: 'minimax_h3_turbo_v4_step600_ema.safetensors', strength: 1, low_vram: true } },
+    '2': { class_type: 'MiniMaxH3TurboLoRA', inputs: { model: ['1', 0], lora_name: 'minimax_h3_turbo_v4_step600_ema.safetensors', strength: 1, low_vram: false } },
     '3': { class_type: 'CLIPLoaderGGUF', inputs: { clip_name: 'qwen3vl-32B-MiniMax-H3-Q2_K.gguf', type: 'minimax' } },
     '4': { class_type: 'VAELoader', inputs: { vae_name: 'minimax_h3_video_vae_int8_convrot.safetensors' } },
     '5': { class_type: 'VAELoader', inputs: { vae_name: 'minimax_h3_audio_vae_bf16.safetensors' } },
@@ -746,12 +746,28 @@ async function makeTextPackage(project, revisionInstruction = '') {
   return created
 }
 
-async function makeStoryboard(project) {
+export function storyboardShotCount(project) {
+  const requested = Number(project.storyboardShotCount)
+  if (Number.isInteger(requested) && requested >= 1 && requested <= 10) return requested
+  return Math.max(1, Math.ceil(Number(project.duration || 18) / 6))
+}
+
+export function storyboardShotDurations(project, count) {
+  const total = Math.max(5, Number(project.duration || 18))
+  if (count === 1) return [total]
+  const durations = Array.from({ length: count }, () => 6)
+  durations[count - 1] = Math.max(5, total - 6 * (count - 1))
+  return durations
+}
+
+async function makeStoryboard(project, revisionInstruction = '') {
   const brief = project.creativeBrief || {}
   const concept = (project.concepts || []).find((item) => item.id === project.selectedConceptId)
   if (!concept) throw new Error('请先选择创意方向')
-  const count = Math.max(1, Math.ceil(Number(project.duration || 18) / 6))
-  const prompt = `你是专业短视频导演。严格依据已确认的创作简报、用户选择的创意方向和当前已生效文字标准，拆成 ${count} 个连续镜头，每个恰好6秒，画幅${project.aspect || '16:9'}。用户手动修改过的脚本、视听说明和制作说明优先级最高。保持主体外观、服装、道具和环境连续。每个video_prompt必须可独立生成视频，写清主体特征、动作、环境、镜头运动、构图、光线、声音以及与前后镜头的连续性，避免模型难以完成的复杂快速动作。先给出你对分镜节奏和视觉组织的专业判断，再提供2-3个可供用户继续调整的方向。只返回JSON：{"title":"片名","summary":"一句话创意","insight":"分镜设计判断和理由","choices":[{"label":"调整方向","description":"对成片的影响","reply":"用户选择后送回导演的修改要求"}],"shots":[{"title":"镜头1","description":"观众看到和听到什么","video_prompt":"可直接生成视频的详细提示词"}]}。创作简报：${JSON.stringify({ ...brief, aspect: project.aspect, duration: project.duration, engine: project.engine })}。当前已生效文字标准：${JSON.stringify(currentTextStandards(project))}。选定方向：${JSON.stringify(concept)}`
+  const count = storyboardShotCount(project)
+  const durations = storyboardShotDurations(project, count)
+  const previous = project.shots || []
+  const prompt = `你是专业短视频导演。严格依据已确认的创作简报、用户选择的创意方向和当前已生效文字标准，制作恰好 ${count} 个连续镜头，总时长 ${project.duration} 秒；镜头时长依次固定为 ${durations.join('、')} 秒，画幅${project.aspect || '16:9'}。不得增加、删除或合并用户明确指定以外的情节。用户手动修改过的脚本、视听说明、制作说明和本轮返修要求优先级最高。保持主体外观、服装、道具和环境连续。每个video_prompt必须可独立生成视频，写清主体特征、动作、环境、镜头运动、构图、光线、声音以及与前后镜头的连续性，避免模型难以完成的复杂快速动作。先给出你对分镜节奏和视觉组织的专业判断，再提供2-3个可供用户继续调整的方向。只返回JSON：{"title":"片名","summary":"一句话创意","insight":"分镜设计判断和理由","choices":[{"label":"调整方向","description":"对成片的影响","reply":"用户选择后送回导演的修改要求"}],"shots":[{"title":"镜头1","description":"观众看到和听到什么","video_prompt":"可直接生成视频的详细提示词"}]}。创作简报：${JSON.stringify({ ...brief, aspect: project.aspect, duration: project.duration, engine: project.engine })}。当前已生效文字标准：${JSON.stringify(currentTextStandards(project))}。选定方向：${JSON.stringify(concept)}。现有分镜（仅在返修要求明确保留时作为保留依据）：${JSON.stringify(previous.map(({ index, title, description, video_prompt }) => ({ index, title, description, video_prompt })))}。${revisionInstruction ? `本轮返修要求（最高优先级）：${revisionInstruction}` : ''}`
   const data = await miniFetch(`${apiHost}/v1/chat/completions`, {
     method: 'POST', body: JSON.stringify({ model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 8000, temperature: 0.4 }),
   })
@@ -764,7 +780,6 @@ async function makeStoryboard(project) {
     })
     plan = extractJson(retry.choices?.[0]?.message?.content || '')
   }
-  const previous = project.shots || []
   project.title = plan.title || project.title
   project.summary = plan.summary || project.summary
   project.stageInsight = String(plan.insight || '').slice(0, 1000)
@@ -775,11 +790,40 @@ async function makeStoryboard(project) {
     title: shot.title,
     description: shot.description,
     video_prompt: shot.video_prompt,
+    duration: durations[index],
     status: 'ready',
     imageFile: previous[index]?.imageFile || project.referenceImages?.[index] || (index === 0 ? project.pendingImage : '') || '',
   }))
   if (project.pendingImage) project.pendingImage = ''
   return project
+}
+
+async function reviseStoryboard(project, action = {}) {
+  const phase = project.phase
+  if (!['storyboard_review', 'quality_review', 'ready_to_generate', 'delivery_review', 'delivered'].includes(phase)) {
+    throw new Error('当前阶段不能整体返修分镜')
+  }
+  if (['delivery_review', 'delivered'].includes(phase)) archiveCurrentRender(project)
+  const changed = applyBriefPatch(project, action)
+  const shotCount = Number(action.shotCount)
+  if (Number.isInteger(shotCount) && shotCount >= 1 && shotCount <= 10) {
+    if (project.storyboardShotCount !== shotCount) changed.push('shotCount')
+    project.storyboardShotCount = shotCount
+  }
+  const instruction = String(action.instruction || '').trim().slice(0, 4000)
+  if (instruction) {
+    project.storyboardRevisionInstruction = instruction
+    changed.push('storyboard')
+  }
+  await makeStoryboard(project, instruction)
+  project.phase = 'storyboard_review'
+  project.storyboardConfirmedAt = ''
+  project.qualityReview = null
+  project.finalUrl = ''
+  project.finalFilename = ''
+  project.finalError = ''
+  project.deliveredAt = ''
+  return [...new Set(changed)]
 }
 
 async function rewriteShot(project, shotNo, instruction) {
@@ -823,7 +867,7 @@ async function startLocalShot(project, shot) {
   const seed = Number(String(Date.now()).slice(-9))
   const submitted = await comfyJson('/prompt', {
     method: 'POST',
-    body: JSON.stringify({ prompt: buildH3Prompt({ prompt: shot.video_prompt, width, height, length: h3Length(6), imageName, seed }), client_id: 'xinghui-studio' }),
+    body: JSON.stringify({ prompt: buildH3Prompt({ prompt: shot.video_prompt, width, height, length: h3Length(shot.duration || 6), imageName, seed }), client_id: 'xinghui-studio' }),
   })
   if (submitted.node_errors && Object.keys(submitted.node_errors).length) {
     throw new Error('生成任务提交失败')
@@ -838,6 +882,7 @@ async function startLocalShot(project, shot) {
 }
 
 async function startCloudShot(project, shot) {
+  if (Number(shot.duration || 6) !== 6) throw new Error('云端当前只支持单镜 6 秒；请切换为本机生成，或拆成 6 秒镜头后再开拍')
   const payload = { model: 'MiniMax-Hailuo-2.3', prompt: shot.video_prompt, duration: 6, resolution: '768P', aigc_watermark: false }
   const firstFrame = shot.imageFile ? store.imageDataUrl(project.id, shot.imageFile) : ''
   if (firstFrame) payload.first_frame_image = firstFrame
@@ -957,6 +1002,14 @@ async function applyActions(project, actions, notes, artifactChanges = [], optio
         notes.push(`已改第 ${action.shot} 镜，请再确认分镜`)
       } else {
         notes.push(`已改第 ${action.shot} 镜`)
+      }
+    } else if (op === 'revise_storyboard') {
+      try {
+        const changed = await reviseStoryboard(project, action)
+        artifactChanges.push(...changed)
+        notes.push(`已按最新要求重建 ${project.shots.length} 镜、${project.duration} 秒的分镜，请重新确认`)
+      } catch (error) {
+        notes.push(error.message)
       }
     }
   }
@@ -1328,10 +1381,16 @@ app.post('/api/projects/:id/approve-quality', (req, res) => {
   } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
 })
 
-app.post('/api/projects/:id/revise-storyboard', (req, res) => {
+app.post('/api/projects/:id/revise-storyboard', async (req, res) => {
   try {
     const project = projectOr404(req.params.id)
     if (!['quality_review', 'ready_to_generate', 'delivery_review'].includes(project.phase)) return res.status(409).json({ error: '当前不能返回修改分镜' })
+    if (String(req.body?.instruction || '').trim()) {
+      await reviseStoryboard(project, req.body)
+      recordBriefRevision(project, ['storyboard', 'shotCount', 'duration'].filter((key) => key === 'storyboard' || req.body?.[key] !== undefined), '用户明确提交了结构性分镜返修，右侧分镜已更新为待审版本。')
+      store.save(project)
+      return res.json(project)
+    }
     project.phase = 'storyboard_review'
     project.storyboardConfirmedAt = ''
     project.finalUrl = ''
