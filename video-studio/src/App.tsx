@@ -446,7 +446,7 @@ function App() {
   return (
     <div className="app-shell chat-app">
       <header className="topbar">
-        <div className="brand"><Sparkles size={25} fill="currentColor" /><strong>星绘视频工坊</strong></div>
+        <div className="brand"><Sparkles size={25} fill="currentColor" /><strong>鲲鹏的视频制作工坊</strong><small>（个人用）</small></div>
         <div className="connections">
           <span className={status?.m3 ? 'online' : 'offline'}><i />导演 {status?.directorMode === 'demo' ? '固定演示' : status?.m3 ? `${status.model} 已连接` : '未连接'}</span>
           <span className={status?.comfy ? 'online' : 'offline'}><i />本机生成 {status?.videoDemo ? '模拟模式' : status?.comfy ? '就绪' : '未启动'}</span>

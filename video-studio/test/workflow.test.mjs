@@ -648,4 +648,34 @@ describe('engine switching and asset library', () => {
     const gone = await fetch(`${baseUrl}/api/projects/${created.id}`)
     assert.equal(gone.status, 404)
   })
+
+  it('keeps replaced rendered shots as local material assets', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    fs.writeFileSync(file, JSON.stringify({
+      ...created,
+      phase: 'quality_review',
+      duration: 18,
+      selectedConceptId: 'c1',
+      concepts: [{ id: 'c1', title: 'A', logline: 'l', narrative: 'n', visualHook: 'v', ending: 'e' }],
+      shots: [
+        { id: 'old-1', index: 0, title: '旧镜一', description: 'd', video_prompt: 'p1', status: 'Success', filename: 'h3-material.mp4', duration: 6 },
+        { id: 'old-2', index: 1, title: '旧镜二', description: 'd', video_prompt: 'p2', status: 'Success', filename: 'h3-material2.mp4', duration: 6 },
+        { id: 'old-3', index: 2, title: '旧镜三', description: 'd', video_prompt: 'p3', status: 'ready', duration: 6 },
+      ],
+    }, null, 2))
+    const revised = await fetch(`${baseUrl}/api/projects/${created.id}/revise-storyboard`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instruction: '删掉镜头二和三，只保留镜头一并重建' }),
+    })
+    assert.equal(revised.status, 200)
+    const project = await revised.json()
+    const materials = project.materialShots || []
+    assert.equal(materials.length, 2)
+    assert.deepEqual(materials.map((item) => item.filename).sort(), ['h3-material.mp4', 'h3-material2.mp4'])
+    const assets = await fetch(`${baseUrl}/api/assets`).then((response) => response.json())
+    const material = assets.find((item) => item.id === `${created.id}:material:old-1`)
+    assert.ok(material)
+    assert.match(material.title, /本地素材/)
+  })
 })

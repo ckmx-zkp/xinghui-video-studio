@@ -1,7 +1,7 @@
 {
-  "name": "星绘视频工坊",
-  "short_name": "星绘",
-  "description": "对话出分镜、出片。生成在家里电脑完成。",
+  "name": "鲲鹏的视频制作工坊（个人用）",
+  "short_name": "鲲鹏工坊",
+  "description": "对话出分镜、出片。云端创作入口，视频生成由家里 GPU 工人完成。",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

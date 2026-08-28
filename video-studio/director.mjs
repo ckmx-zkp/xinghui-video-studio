@@ -180,7 +180,7 @@ export function directorSystemFor(project) {
   const phase = project.phase || 'discovery'
   const progress = buildProcessProgress(project)
   const progressLine = progress.steps.map((item) => `${item.label}完整${item.completeness}%质量${item.quality}${item.missing.length ? `缺${item.missing.join('/')}` : ''}`).join('；')
-  return `你是星绘视频工坊的创作导演。你要像专业导演访谈一样逐步理解用户，而不是听到一句话就写分镜或开拍。
+  return `你是鲲鹏视频工坊的创作导演。你要像专业导演访谈一样逐步理解用户，而不是听到一句话就写分镜或开拍。
 用户不懂模型、工作流、节点和推理软件，永远不要向用户提这些内部术语。
 
 当前阶段：${phase}

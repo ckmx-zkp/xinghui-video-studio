@@ -837,12 +837,33 @@ async function makeStoryboard(project, revisionInstruction = '') {
   return project
 }
 
+// Shots whose rendered video would be orphaned by a rebuild are kept as
+// reusable local material instead of disappearing from the library.
+function preserveRenderedMaterials(project) {
+  const rendered = (project.shots || []).filter((shot) => shot.filename)
+  if (!rendered.length) return
+  project.materialShots = Array.isArray(project.materialShots) ? project.materialShots : []
+  for (const shot of rendered) {
+    if (project.materialShots.some((item) => item.id === shot.id)) continue
+    project.materialShots.push({
+      id: shot.id,
+      index: shot.index,
+      title: shot.title || `镜头 ${shot.index + 1}`,
+      filename: shot.filename,
+      engine: shot.engine || '',
+      savedAt: new Date().toISOString(),
+    })
+  }
+  project.materialShots = project.materialShots.slice(-40)
+}
+
 async function reviseStoryboard(project, action = {}) {
   const phase = project.phase
   if (!['storyboard_review', 'quality_review', 'ready_to_generate', 'delivery_review', 'delivered'].includes(phase)) {
     throw new Error('当前阶段不能整体返修分镜')
   }
   if (['delivery_review', 'delivered'].includes(phase)) archiveCurrentRender(project)
+  preserveRenderedMaterials(project)
   const changed = applyBriefPatch(project, action)
   const shotCount = Number(action.shotCount)
   if (Number.isInteger(shotCount) && shotCount >= 1 && shotCount <= 10) {
@@ -1242,6 +1263,16 @@ app.get('/api/assets', (_req, res) => {
         url: `/media/${shot.filename}`,
         updatedAt: project.updatedAt,
       })),
+    ...(project.materialShots || []).map((shot) => ({
+      id: `${project.id}:material:${shot.id}`,
+      projectId: project.id,
+      projectTitle: project.title,
+      filename: shot.filename,
+      type: 'video',
+      title: `${shot.title} · 本地素材`,
+      url: `/media/${shot.filename}`,
+      updatedAt: project.updatedAt,
+    })),
   ])
   res.json(assets)
 })
@@ -1526,6 +1557,7 @@ app.post('/api/projects/:id/prepare-reshoot', async (req, res) => {
         deliveredAt: project.deliveredAt || new Date().toISOString(),
       })
     }
+    preserveRenderedMaterials(project)
     project.shots = project.shots.map((shot) => {
       const source = { ...shot }
       delete source.taskId
@@ -1717,7 +1749,7 @@ async function completeDirectorTurn(project, history, options = {}) {
       messages: recovery ? [
         {
           role: 'system',
-          content: `你是星绘视频工坊的创作导演。上一次回复没有完整输出，现在根据当前项目和用户最后一句话重新完成本轮工作。
+          content: `你是鲲鹏视频工坊的创作导演。上一次回复没有完整输出，现在根据当前项目和用户最后一句话重新完成本轮工作。
 当前项目：${JSON.stringify(projectSnapshot)}
 要求：先回应用户刚才的决定，再给出专业判断。${needsDiscoveryQuestion ? '这是 discovery 第一轮，只追问一个最有价值的问题，输出 question 和 2-4 个有真实差异的选择。' : '关键问题已经回答，不得继续追问，question 为 null，choices 为空，并补齐简报送审。'}不得生成分镜或视频。
 严格只输出一个简短 JSON 对象：{"say":"不超过240字","insight":"不超过180字","question":{"key":"英文决策键","text":"唯一问题","importance":"影响"}|null,"choices":[],"actions":[]}`,
@@ -1893,7 +1925,7 @@ if (fs.existsSync(dist)) {
 let serverInstance
 export function startServer() {
   if (serverInstance) return serverInstance
-  serverInstance = app.listen(port, '127.0.0.1', () => console.log(`星绘视频工坊: http://127.0.0.1:${port}`))
+  serverInstance = app.listen(port, '127.0.0.1', () => console.log(`鲲鹏的视频制作工坊: http://127.0.0.1:${port}`))
   startComfyProgressFeed()
   return serverInstance
 }

@@ -77,6 +77,7 @@ export function createProjectStore(root) {
         sourceArtifactIds: Array.isArray(item?.sourceArtifactIds) ? item.sourceArtifactIds : [],
       })),
       previousRenders: Array.isArray(project?.previousRenders) ? project.previousRenders : [],
+    materialShots: Array.isArray(project?.materialShots) ? project.materialShots : [],
       referenceImages: Array.isArray(project?.referenceImages) ? project.referenceImages : [],
       stageChoices: Array.isArray(project?.stageChoices) ? project.stageChoices : [],
       shots: Array.isArray(project?.shots) ? project.shots : [],
