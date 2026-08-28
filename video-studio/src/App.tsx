@@ -754,7 +754,8 @@ function WorkflowPanel({ project, busy, onAction }: {
         <div className="workflow-title"><Film />分镜评审</div>
         <p>{project.stageInsight || `共 ${project.shots.length} 镜，${project.duration} 秒`}</p>
         {Boolean(project.stageChoices?.length) && <div className="stage-choices">{project.stageChoices?.map((choice) => <button key={choice.id} disabled={busy} onClick={() => onAction('chat', { message: choice.reply })}><b>{choice.label}</b><small>{choice.description}</small></button>)}</div>}
-        <button className="workflow-primary" disabled={busy || !project.shots.length} onClick={() => onAction('confirm-storyboard')}><Check />确认并继续</button>
+        {project.briefStale && <p className="workflow-hint">分镜基于旧版创作简报，请先返修：直接说“按最新简报返修分镜”。</p>}
+        <button className="workflow-primary" disabled={busy || !project.shots.length || project.briefStale} onClick={() => onAction('confirm-storyboard')}><Check />确认并继续</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('reselect-concept')}><ArrowLeft />重新选择方向</button>
       </section>
     )
@@ -764,7 +765,8 @@ function WorkflowPanel({ project, busy, onAction }: {
     return (
       <section className="workflow-panel quality-panel">
         <QualityReviewCard review={project.qualityReview} />
-        <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-quality')}><Check />通过审核，准备开拍</button>
+        {project.briefStale && <p className="workflow-hint">分镜与最新创作简报不一致，通过审核前请先返修分镜。</p>}
+        <button className="workflow-primary" disabled={busy || project.briefStale} onClick={() => onAction('approve-quality')}><Check />通过审核，准备开拍</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改分镜</button>
       </section>
     )
@@ -776,8 +778,9 @@ function WorkflowPanel({ project, busy, onAction }: {
       <section className={`workflow-panel shoot-panel ${cloud ? 'cloud-shoot' : ''}`}>
         <div className="workflow-title"><Play />准备开拍</div>
         <p>{pending.length} 个镜头 · {cloud ? `将消耗 ${pending.length} 次云端额度` : '本机生成，不消耗云端额度'}</p>
+        {project.briefStale && <p className="workflow-hint">待拍分镜基于旧版创作简报，已阻止开拍；请先返修分镜并重新确认。</p>}
         {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
-        <button className="workflow-primary" disabled={busy || !pending.length} onClick={() => onAction('generate', cloud ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}>
+        <button className="workflow-primary" disabled={busy || !pending.length || project.briefStale} onClick={() => onAction('generate', cloud ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}>
           <Play />{cloud ? `确认消耗 ${pending.length} 次并开拍` : '开始本机生成'}
         </button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回调整分镜</button>

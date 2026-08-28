@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { buildProcessProgress } from './director.mjs'
+import { buildProcessProgress, storyboardMatchesBrief } from './director.mjs'
 
 export function createProjectStore(root) {
   const projectsDir = path.join(root, 'outputs', 'projects')
@@ -88,7 +88,8 @@ export function createProjectStore(root) {
     if (!next.creativeBrief.goal && next.idea) next.creativeBrief.goal = next.idea
     next.briefVersion = Number(next.briefVersion || 0)
     next.storyboardBriefVersion = Number(next.storyboardBriefVersion || 0)
-    next.briefStale = next.shots.length > 0 && next.briefVersion !== next.storyboardBriefVersion
+    next.briefStale = next.shots.length > 0
+      && (next.briefVersion !== next.storyboardBriefVersion || !storyboardMatchesBrief(next))
     next.processProgress = buildProcessProgress(next)
     return next
   }

@@ -26,6 +26,31 @@ export const PROCESS_STEPS = [
   { id: 'delivery', label: '交付', gate: 'delivery_review' },
 ]
 
+export function storyboardShotCount(project) {
+  const requested = Number(project?.storyboardShotCount)
+  if (Number.isInteger(requested) && requested >= 1 && requested <= 10) return requested
+  return Math.max(1, Math.ceil((Number(project?.duration) || 18) / 6))
+}
+
+export function storyboardShotDurations(project, count) {
+  const total = Math.max(5, Number(project?.duration) || 18)
+  if (count === 1) return [total]
+  const durations = Array.from({ length: count }, () => 6)
+  durations[count - 1] = Math.max(5, total - 6 * (count - 1))
+  return durations
+}
+
+// A shot list only matches the brief when its structure equals what the current
+// duration and shot count imply. This catches stale storyboards even on legacy
+// projects that were created before brief versions existed.
+export function storyboardMatchesBrief(project) {
+  const shots = Array.isArray(project?.shots) ? project.shots : []
+  if (!shots.length) return true
+  if (shots.length !== storyboardShotCount(project)) return false
+  const durations = storyboardShotDurations(project, shots.length)
+  return shots.every((shot, index) => Math.round(Number(shot?.duration || 6)) === Math.round(durations[index]))
+}
+
 const clampScore = (value) => Math.max(0, Math.min(100, Math.round(Number(value) || 0)))
 const average = (values) => {
   const items = values.filter((item) => Number.isFinite(item))
@@ -49,7 +74,7 @@ export function buildProcessProgress(project) {
   const concepts = Array.isArray(project.concepts) ? project.concepts : []
   const selected = concepts.find((item) => item.id === project.selectedConceptId)
   const shots = Array.isArray(project.shots) ? project.shots : []
-  const expectedShots = Math.max(1, Math.round((Number(project.duration) || 18) / 6))
+  const expectedShots = storyboardShotCount(project)
   const successShots = shots.filter((item) => item.status === 'Success').length
   const failedShots = shots.filter((item) => item.status === 'Fail').length
 

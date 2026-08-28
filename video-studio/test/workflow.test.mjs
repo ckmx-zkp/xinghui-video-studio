@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
+import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList, storyboardMatchesBrief } from '../director.mjs'
 
 // server.mjs reads its runtime modes at import time, so the demo switch must be
 // set before the dynamic import below. Director replies in tests therefore come
@@ -446,6 +446,78 @@ describe('brief and storyboard consistency', () => {
     assert.equal(project.phase, 'ready_to_generate')
     assert.equal(project.storyboardConfirmedAt, 'yes')
     assert.equal(project.briefVersion, 3)
+  })
+
+  it('detects structure drift between brief and storyboard regardless of versions', () => {
+    assert.equal(storyboardMatchesBrief({ duration: 18, shots: [{ duration: 6 }, { duration: 6 }, { duration: 6 }] }), true)
+    assert.equal(storyboardMatchesBrief({ duration: 10, shots: [{ duration: 6 }, { duration: 6 }, { duration: 6 }] }), false)
+    assert.equal(storyboardMatchesBrief({ duration: 10, shots: [{ duration: 6 }, { duration: 5 }] }), true)
+    assert.equal(storyboardMatchesBrief({ duration: 10, storyboardShotCount: 1, shots: [{ duration: 10 }] }), true)
+    assert.equal(storyboardMatchesBrief({ duration: 18, shots: [] }), true)
+  })
+
+  it('blocks confirm and generate on a storyboard that predates the current brief', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    const base = {
+      ...created,
+      duration: 10,
+      briefVersion: 1,
+      storyboardBriefVersion: 1,
+      selectedConceptId: 'c1',
+      concepts: [{ id: 'c1', title: '方向A', logline: '一句话故事成立', narrative: '完整叙事', visualHook: '记忆点', ending: '收束' }],
+      shots: [
+        { id: 'a', index: 0, title: '一', description: '描述', video_prompt: '提示词一', status: 'ready', duration: 6 },
+        { id: 'b', index: 1, title: '二', description: '描述', video_prompt: '提示词二', status: 'ready', duration: 6 },
+        { id: 'c', index: 2, title: '三', description: '描述', video_prompt: '提示词三', status: 'ready', duration: 6 },
+      ],
+    }
+    fs.writeFileSync(file, JSON.stringify({ ...base, phase: 'storyboard_review' }, null, 2))
+
+    const confirmed = await fetch(`${baseUrl}/api/projects/${created.id}/confirm-storyboard`, { method: 'POST' })
+    assert.equal(confirmed.status, 409)
+    assert.match((await confirmed.json()).error, /旧版创作简报/)
+
+    const stale = await fetch(`${baseUrl}/api/projects/${created.id}`).then((response) => response.json())
+    assert.equal(stale.briefStale, true)
+
+    fs.writeFileSync(file, JSON.stringify({
+      ...base,
+      phase: 'ready_to_generate',
+      storyboardConfirmedAt: 'yes',
+      qualityReview: { score: 90, verdict: 'pass', summary: '通过', checks: [], recommendations: [] },
+    }, null, 2))
+    const generated = await fetch(`${baseUrl}/api/projects/${created.id}/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shots: 'pending' }),
+    })
+    assert.equal(generated.status, 409)
+    assert.match((await generated.json()).error, /阻止开拍/)
+  })
+
+  it('lets confirmation proceed once the storyboard matches the brief again', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    fs.writeFileSync(file, JSON.stringify({
+      ...created,
+      phase: 'storyboard_review',
+      duration: 10,
+      briefVersion: 2,
+      storyboardBriefVersion: 2,
+      selectedConceptId: 'c1',
+      concepts: [{ id: 'c1', title: '方向A', logline: '一句话故事成立', narrative: '完整叙事', visualHook: '记忆点', ending: '收束' }],
+      shots: [
+        { id: 'a', index: 0, title: '一', description: '描述', video_prompt: '提示词一', status: 'ready', duration: 6 },
+        { id: 'b', index: 1, title: '二', description: '描述', video_prompt: '提示词二', status: 'ready', duration: 5 },
+      ],
+    }, null, 2))
+
+    const confirmed = await fetch(`${baseUrl}/api/projects/${created.id}/confirm-storyboard`, { method: 'POST' })
+    assert.equal(confirmed.status, 200)
+    const project = await confirmed.json()
+    assert.equal(project.phase, 'quality_review')
+    assert.equal(project.briefStale, false)
   })
 
   it('rebuilds the storyboard and standards from the updated brief before a reshoot', async () => {

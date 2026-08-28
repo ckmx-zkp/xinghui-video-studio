@@ -8,7 +8,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore } from './projects.mjs'
-import { briefReadiness, completionText, dedupeDirectorChoices, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
+import { briefReadiness, completionText, dedupeDirectorChoices, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector, storyboardMatchesBrief, storyboardShotCount, storyboardShotDurations } from './director.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -759,19 +759,7 @@ async function makeTextPackage(project, revisionInstruction = '') {
   return created
 }
 
-export function storyboardShotCount(project) {
-  const requested = Number(project.storyboardShotCount)
-  if (Number.isInteger(requested) && requested >= 1 && requested <= 10) return requested
-  return Math.max(1, Math.ceil(Number(project.duration || 18) / 6))
-}
-
-export function storyboardShotDurations(project, count) {
-  const total = Math.max(5, Number(project.duration || 18))
-  if (count === 1) return [total]
-  const durations = Array.from({ length: count }, () => 6)
-  durations[count - 1] = Math.max(5, total - 6 * (count - 1))
-  return durations
-}
+export { storyboardShotCount, storyboardShotDurations } from './director.mjs'
 
 async function makeStoryboard(project, revisionInstruction = '') {
   const brief = project.creativeBrief || {}
@@ -1396,6 +1384,9 @@ app.post('/api/projects/:id/confirm-storyboard', async (req, res) => {
     const project = projectOr404(req.params.id)
     if (project.phase !== 'storyboard_review') return res.status(409).json({ error: '当前不在分镜评审阶段' })
     if (!project.shots.length) return res.status(409).json({ error: '还没有可确认的分镜' })
+    if (!storyboardMatchesBrief(project) || Number(project.briefVersion || 0) !== Number(project.storyboardBriefVersion || 0)) {
+      return res.status(409).json({ error: '当前分镜基于旧版创作简报，请先返修：直接说“按最新简报返修分镜”，确认后再进入质检' })
+    }
     await reviewStoryboard(project)
     project.phase = 'quality_review'
     project.storyboardConfirmedAt = new Date().toISOString()
@@ -1408,6 +1399,9 @@ app.post('/api/projects/:id/approve-quality', (req, res) => {
   try {
     const project = projectOr404(req.params.id)
     if (project.phase !== 'quality_review') return res.status(409).json({ error: '当前不在质量审核阶段' })
+    if (!storyboardMatchesBrief(project) || Number(project.briefVersion || 0) !== Number(project.storyboardBriefVersion || 0)) {
+      return res.status(409).json({ error: '分镜与最新创作简报不一致，请先返回修改分镜，再通过审核' })
+    }
     project.phase = 'ready_to_generate'
     store.save(project)
     res.json(project)
@@ -1489,6 +1483,10 @@ app.post('/api/projects/:id/generate', async (req, res) => {
   try {
     const project = projectOr404(req.params.id)
     if (!['ready_to_generate', 'generating'].includes(project.phase)) return res.status(409).json({ error: '请先确认创作简报和分镜' })
+    if (project.phase === 'ready_to_generate'
+      && (!storyboardMatchesBrief(project) || Number(project.briefVersion || 0) !== Number(project.storyboardBriefVersion || 0))) {
+      return res.status(409).json({ error: '待拍分镜基于旧版创作简报，已阻止开拍；请先返修分镜并重新确认' })
+    }
     const targets = resolveShotList(req.body.shots || 'pending', project)
     if (!targets.length) return res.status(409).json({ error: '没有需要生成的镜头' })
     if (project.engine === 'cloud') {

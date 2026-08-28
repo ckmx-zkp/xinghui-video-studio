@@ -9,6 +9,7 @@
 - 云端视频流程：额度确认 → Hailuo 2.3 768P/6 秒 → 轮询 → 下载 → FFmpeg 拼接。测试时不要随意提交云端任务。
 - **对话导演已接上**：创作页是聊天，不是填表。`POST /api/projects/:id/chat` 由 M3 决定追问、写分镜、改某一镜、生成本地镜头、合并。默认本机草稿，不消耗云端次数。
 - **简报与分镜版本联动**：简报实际变更会递增 `briefVersion`；分镜重建时记录 `storyboardBriefVersion`。交付后改简报 → `prepare-reshoot` 会先按新简报重建分镜和四份制作标准；`ready_to_generate`/`quality_review` 阶段改简报会作废分镜确认。结构性返修（`revise_storyboard`）现在会同步重建制作标准文档。
+- **旧分镜三道门拦截**：`confirm-storyboard`、`approve-quality`、`generate` 都会校验 `storyboardMatchesBrief`（镜头数与各镜时长必须等于当前时长/镜头数推导的结构）加上版本号一致，否则 409 并提示返修。历史遗留的旧分镜项目同样会被内容校验抓住，前端会禁用相应按钮并显示提示。
 - 项目会保存到 `outputs/projects/<id>/project.json`（聊天、分镜、每镜参考图、任务 id、成片）。
 - **本地 H3 已改为真正排队**：`POST /api/local/generate` 经 ComfyUI `/prompt` 提交 GGUF 工作流，轮询 `/history/{prompt_id}`，成片复制到 `outputs/local/`。不消耗 Token Plan 额度。
 - 启动脚本会检测 4175：已占用则只打开浏览器，不重复起 Node；不关闭已运行的 ComfyUI。
