@@ -612,4 +612,40 @@ describe('engine switching and asset library', () => {
     assert.equal(video.type, 'video')
     assert.equal(video.url, '/media/h3-test.mp4')
   })
+
+  it('validates narration and first-frame requests before calling external APIs', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const emptyNarration = await fetch(`${baseUrl}/api/projects/${created.id}/narration`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: ' ' }),
+    })
+    assert.equal(emptyNarration.status, 400)
+    const missingShot = await fetch(`${baseUrl}/api/projects/${created.id}/shots/9/image-gen`, { method: 'POST', body: '{}' })
+    assert.equal(missingShot.status, 404)
+  })
+
+  it('clears conversation history while keeping production artifacts', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    fs.writeFileSync(file, JSON.stringify({
+      ...created,
+      messages: [{ role: 'user', content: '旧消息' }, { role: 'assistant', content: '旧回复' }],
+      stageChoices: [{ id: 'x', label: '旧选项', description: '', reply: 'r' }],
+      shots: [{ id: 's1', index: 0, title: '保留', description: 'd', video_prompt: 'p', status: 'ready', duration: 6 }],
+    }, null, 2))
+    const cleared = await fetch(`${baseUrl}/api/projects/${created.id}/clear-chat`, { method: 'POST', body: '{}' })
+    assert.equal(cleared.status, 200)
+    const project = await cleared.json()
+    assert.deepEqual(project.messages, [])
+    assert.equal(project.shots.length, 1)
+  })
+
+  it('deletes a project completely on request', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    const removed = await fetch(`${baseUrl}/api/projects/${created.id}`, { method: 'DELETE' })
+    assert.equal(removed.status, 200)
+    const gone = await fetch(`${baseUrl}/api/projects/${created.id}`)
+    assert.equal(gone.status, 404)
+  })
 })

@@ -19,6 +19,9 @@ const port = Number(process.env.STUDIO_PORT || 4175)
 const apiHost = process.env.MINIMAX_API_HOST || 'https://api.minimaxi.com'
 const apiKey = process.env.MINIMAX_API_KEY || ''
 const textModel = process.env.MINIMAX_TEXT_MODEL || 'MiniMax-M3'
+// Both consume the Token Plan shared quota (text/image/speech on one allowance).
+const imageModel = process.env.MINIMAX_IMAGE_MODEL || 'image-01'
+const ttsModel = process.env.MINIMAX_TTS_MODEL || 'speech-2.8-hd'
 const comfyUrl = process.env.COMFY_URL || 'http://127.0.0.1:8188'
 const comfyWsUrl = `${comfyUrl.replace(/^http/i, 'ws')}/ws?clientId=xinghui-studio`
 const comfyProgressByTask = new Map()
@@ -323,6 +326,36 @@ function listH3Models() {
   })
 }
 
+// ComfyUI may run on another machine (the GPU worker behind a tunnel), so the
+// weight check must go through its loader metadata, not the local filesystem.
+let remoteModelGateCache = { at: 0, ok: false }
+async function remoteModelGateOk() {
+  if (Date.now() - remoteModelGateCache.at < 60000) return remoteModelGateCache.ok
+  try {
+    const info = await comfyJson('/object_info')
+    const has = (type, field, file) => {
+      const spec = info?.[type]?.input?.required?.[field]
+      const choices = Array.isArray(spec?.[0]) ? spec[0] : []
+      return choices.includes(file)
+    }
+    const ok = has('UnetLoaderGGUF', 'unet_name', 'minimax_h3_fl2va_pruned-Q4_K.gguf')
+      && has('CLIPLoaderGGUF', 'clip_name', 'qwen3vl-32B-MiniMax-H3-Q2_K.gguf')
+      && has('VAELoader', 'vae_name', 'minimax_h3_video_vae_int8_convrot.safetensors')
+      && has('VAELoader', 'vae_name', 'minimax_h3_audio_vae_bf16.safetensors')
+      && has('MiniMaxH3TurboLoRA', 'lora_name', 'minimax_h3_turbo_v4_step600_ema.safetensors')
+    remoteModelGateCache = { at: Date.now(), ok }
+    return ok
+  } catch {
+    remoteModelGateCache = { at: Date.now(), ok: false }
+    return false
+  }
+}
+
+async function modelsReadyNow() {
+  if (videoDemoMode) return true
+  return remoteModelGateOk()
+}
+
 function h3Length(seconds) {
   const frames = Math.max(5, Math.round(Number(seconds || 6) * 24))
   return 17 * Math.max(0, Math.ceil((frames - 5) / 17)) + 5
@@ -413,11 +446,6 @@ function collectVideos(outputs = {}) {
     }
   }
   return files
-}
-
-function resolveComfyFile(file) {
-  const kind = file.type === 'temp' ? 'temp' : 'output'
-  return path.join(comfyRoot, kind, file.subfolder || '', file.filename)
 }
 
 // H3's sampler does not consistently publish a step counter on AMD/Windows.
@@ -533,15 +561,18 @@ async function harvestLocalTask(task) {
   const videos = collectVideos(entry.outputs)
   const video = videos.find((item) => /\.(mp4|webm|mkv)$/i.test(item.filename)) || videos[0]
   if (video) {
-    const source = resolveComfyFile(video)
     const filename = `h3-${task.id.slice(0, 8)}.mp4`
     const dest = path.join(localDir, filename)
-    if (fs.existsSync(source) && !fs.existsSync(dest)) fs.copyFileSync(source, dest)
-    if (fs.existsSync(dest)) {
-      task.status = 'Success'
-      task.filename = filename
-      task.comfyFile = video
+    if (!fs.existsSync(dest)) {
+      // ComfyUI may live on the GPU worker, so pull the render over HTTP.
+      const params = new URLSearchParams({ filename: video.filename, subfolder: video.subfolder || '', type: video.type || 'output' })
+      const response = await fetch(`${comfyUrl}/view?${params}`, { signal: AbortSignal.timeout(120000) })
+      if (!response.ok) throw new Error(`从 ComfyUI 拉取成片失败 ${response.status}`)
+      fs.writeFileSync(dest, Buffer.from(await response.arrayBuffer()))
     }
+    task.status = 'Success'
+    task.filename = filename
+    task.comfyFile = video
   } else if (entry.status?.completed) {
     task.status = 'Fail'
     task.error = 'ComfyUI 未返回视频文件'
@@ -563,7 +594,7 @@ app.get('/api/status', async (_req, res) => {
     comfy: false,
     quota: { used: 0, total: 0, weeklyUsed: 0, weeklyTotal: 0 },
     model: textModel,
-    models: { ready: videoDemoMode || models.every((item) => item.present), simulated: videoDemoMode, files: models.map(({ id, file, present }) => ({ id, file, present })) },
+    models: { ready: false, simulated: videoDemoMode, files: models.map(({ id, file, present }) => ({ id, file, present })) },
   }
   if (apiKey) {
     try {
@@ -579,6 +610,7 @@ app.get('/api/status', async (_req, res) => {
     } catch (error) { result.m3Error = error.message }
   }
   result.comfy = videoDemoMode || await comfyOk()
+  result.models.ready = await modelsReadyNow()
   res.json(result)
 })
 
@@ -870,8 +902,7 @@ async function startLocalShot(project, shot) {
     return task
   }
   if (!await comfyOk()) throw new Error('本机生成服务未连接，请先打开星绘工坊启动脚本')
-  const missing = listH3Models().filter((item) => !item.present)
-  if (missing.length) throw new Error('本机模型文件不完整')
+  if (!await remoteModelGateOk()) throw new Error('GPU 工人上的 H3 模型不完整或 ComfyUI 未就绪')
   const [width, height] = h3Size(project.aspect)
   const firstFrame = shot.imageFile ? store.imageDataUrl(project.id, shot.imageFile) : ''
   const imageName = firstFrame ? await uploadComfyImage(firstFrame, `${project.id}-${shot.id}`) : undefined
@@ -916,17 +947,29 @@ async function mergeProject(project) {
     return fs.existsSync(cloud) ? cloud : local
   }).filter(fs.existsSync)
   if (!ffmpegPath || files.length < 2) throw new Error('至少需要两个已完成镜头才能合并')
+  const narrationPath = project.narrationFile ? path.join(outputDir, path.basename(project.narrationFile)) : ''
+  const hasNarration = Boolean(narrationPath && fs.existsSync(narrationPath))
   const list = path.join(outputDir, `merge-${Date.now()}.txt`)
   fs.writeFileSync(list, files.map((file) => `file '${file.replaceAll("'", "'\\''")}'`).join('\n'))
+  const concatName = hasNarration ? `concat-${Date.now()}.mp4` : ''
   const output = `final-${Date.now()}.mp4`
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', path.join(outputDir, output)])
+      const child = spawn(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', path.join(outputDir, concatName || output)])
       let error = ''; child.stderr.on('data', (chunk) => { error += chunk })
       child.on('close', (code) => code === 0 ? resolve() : reject(new Error(error.slice(-1200))))
     })
+    // A narration track replaces the clips' own ambient audio on the final cut.
+    if (hasNarration) {
+      await new Promise((resolve, reject) => {
+        const child = spawn(ffmpegPath, ['-y', '-i', path.join(outputDir, concatName), '-i', narrationPath, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-shortest', path.join(outputDir, output)])
+        let error = ''; child.stderr.on('data', (chunk) => { error += chunk })
+        child.on('close', (code) => code === 0 ? resolve() : reject(new Error(error.slice(-1200))))
+      })
+    }
   } finally {
     if (fs.existsSync(list)) fs.unlinkSync(list)
+    if (concatName && fs.existsSync(path.join(outputDir, concatName))) fs.unlinkSync(path.join(outputDir, concatName))
   }
   project.finalFilename = output
   project.finalUrl = `/media/${output}`
@@ -1084,31 +1127,31 @@ function directStartFromChat(project) {
   const changed = applyDirectorDefaults(project)
   if (project.phase === 'discovery' && briefReadiness(project).ready) project.phase = 'brief_review'
   if (['delivery_review', 'delivered'].includes(project.phase)) {
-    return { say: '这个项目已有成片。请在右侧点击“基于当前分镜重新开拍”，我会保留现有素材和分镜并建立新版本。', changed }
+    return { say: '这个项目已有成片。请点击“基于当前分镜重新开拍”，我会保留现有素材和分镜并建立新版本。', changed }
   }
   const guidance = {
-    brief_review: '默认创作方案已经补齐并显示在右侧，请确认简报后生成创意方向。',
-    concept_selection: '创意方向已经在右侧，请选择一个方向后继续。',
-    storyboard_review: '分镜已经在右侧，请确认分镜后进入质量审核。',
-    quality_review: '质量检查已经在右侧，请明确通过后进入开拍确认。',
-    ready_to_generate: '项目已经准备好，请点击右侧开拍按钮；云端会明确显示本次额度。',
-    generating: '项目正在生成，不会重复提交任务。请在右侧查看进度。',
+    brief_review: '默认创作方案已经补齐，请确认简报后生成创意方向。',
+    concept_selection: '创意方向已经在下方，请选择一个方向后继续。',
+    storyboard_review: '分镜已经在下方，请确认分镜后进入质量审核。',
+    quality_review: '质量检查已经在下方，请明确通过后进入开拍确认。',
+    ready_to_generate: '项目已经准备好，请点击开拍按钮；云端会明确显示本次额度。',
+    generating: '项目正在生成，不会重复提交任务。请在下方查看进度。',
   }
-  return { say: guidance[project.phase] || '创作产物已更新在右侧，请从当前审核节点继续。', changed }
+  return { say: guidance[project.phase] || '创作产物已更新，请从当前审核节点继续。', changed }
 }
 
 function currentGateGuidance(project) {
   const guidance = {
-    brief_review: '创作简报已经在右侧，请点击“确认简报”进入创意方向。',
-    concept_selection: '请在右侧选择一个创意方向；每个方向都会改变叙事或视觉执行。',
-    storyboard_review: '分镜已经在右侧，请审阅后点击“确认分镜”。',
-    quality_review: '质量审核结果已经在右侧，请明确通过或返回修改。',
-    ready_to_generate: '项目已经准备好，请点击右侧开拍按钮。',
+    brief_review: '创作简报已经生成，请点击“确认简报”进入创意方向。',
+    concept_selection: '请在下方选择一个创意方向；每个方向都会改变叙事或视觉执行。',
+    storyboard_review: '分镜已经在下方，请审阅后点击“确认分镜”。',
+    quality_review: '质量审核结果已经在下方，请明确通过或返回修改。',
+    ready_to_generate: '项目已经准备好，请点击开拍按钮。',
     generating: '项目正在生成，不会重复提交任务。',
-    delivery_review: '成片正在等待交付确认；如需重拍，请点击右侧“基于当前分镜重新开拍”。',
-    delivered: '项目已经交付；如需新版本，请点击右侧“基于当前分镜重新开拍”。',
+    delivery_review: '成片正在等待交付确认；如需重拍，请点击“基于当前分镜重新开拍”。',
+    delivered: '项目已经交付；如需新版本，请点击“基于当前分镜重新开拍”。',
   }
-  return guidance[project.phase] || '请继续补充创作目标，我会把新增结论同步到右侧画布。'
+  return guidance[project.phase] || '请继续补充创作目标，我会把新增结论同步到创作画布。'
 }
 
 function recordBriefRevision(project, fields, insight) {
@@ -1329,7 +1372,7 @@ app.post('/api/projects/:id/update-artifacts', (req, res) => {
     const unique = [...new Set(changed)]
     if (!unique.length) return res.json(project)
     invalidateDownstreamForStandards(project)
-    recordBriefRevision(project, unique, '用户手动修改右侧生产标准，后续创意、分镜和视频生成均以新版本为准。')
+    recordBriefRevision(project, unique, '用户手动修改生产标准，后续创意、分镜和视频生成均以新版本为准。')
     store.save(project)
     res.json(project)
   } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
@@ -1436,7 +1479,7 @@ app.post('/api/projects/:id/revise-storyboard', async (req, res) => {
     if (!['quality_review', 'ready_to_generate', 'delivery_review'].includes(project.phase)) return res.status(409).json({ error: '当前不能返回修改分镜' })
     if (String(req.body?.instruction || '').trim()) {
       await reviseStoryboard(project, req.body)
-      recordBriefRevision(project, ['storyboard', 'shotCount', 'duration'].filter((key) => key === 'storyboard' || req.body?.[key] !== undefined), '用户明确提交了结构性分镜返修，右侧分镜已更新为待审版本。')
+      recordBriefRevision(project, ['storyboard', 'shotCount', 'duration'].filter((key) => key === 'storyboard' || req.body?.[key] !== undefined), '用户明确提交了结构性分镜返修，分镜已更新为待审版本。')
       store.save(project)
       return res.json(project)
     }
@@ -1563,6 +1606,97 @@ app.post('/api/projects/:id/shots/:index/engine', (req, res) => {
     shot.engine = ['local', 'cloud'].includes(value) ? value : ''
     store.save(project)
     res.json(project)
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
+})
+
+// Image and speech generation ride the same Token Plan quota as the director.
+function buildFirstFramePrompt(project, shot) {
+  const brief = project.creativeBrief || {}
+  return [
+    `为一段短视频生成首帧静态画面：${shot.video_prompt}`,
+    brief.subject ? `主体：${brief.subject}` : '',
+    brief.visualStyle ? `视觉风格：${brief.visualStyle}` : '',
+    brief.constraints ? `硬性约束（必须遵守）：${brief.constraints}` : '',
+    '单张静态电影感画面，构图完整，主体清晰，不出现文字、水印或分屏。',
+  ].filter(Boolean).join('。').slice(0, 1800)
+}
+
+app.post('/api/projects/:id/shots/:index/image-gen', async (req, res) => {
+  try {
+    if (!apiKey) return res.status(400).json({ error: '未配置 MINIMAX_API_KEY，无法生成首帧' })
+    const project = projectOr404(req.params.id)
+    const shot = project.shots.find((item) => item.index === Number(req.params.index))
+    if (!shot) return res.status(404).json({ error: '镜头不存在' })
+    const data = await miniFetch(`${apiHost}/v1/image_generation`, {
+      method: 'POST',
+      body: JSON.stringify({ model: imageModel, prompt: buildFirstFramePrompt(project, shot), aspect_ratio: ['16:9', '9:16', '1:1'].includes(project.aspect) ? project.aspect : '16:9', response_format: 'url' }),
+    })
+    const url = data?.data?.image_urls?.[0]
+    if (!url) throw new Error('图像接口没有返回图片')
+    const response = await fetch(url, { signal: AbortSignal.timeout(60000) })
+    if (!response.ok) throw new Error(`下载生成图失败 ${response.status}`)
+    const saved = store.saveImageBuffer(project.id, Buffer.from(await response.arrayBuffer()), `s${shot.index + 1}`)
+    project.referenceImages = project.referenceImages || []
+    if (!project.referenceImages.includes(saved.filename)) project.referenceImages.push(saved.filename)
+    shot.imageFile = saved.filename
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 502).json({ error: error.message }) }
+})
+
+const NARRATION_VOICES = new Set(['presenter_female', 'presenter_male', 'female-shaonv', 'male-qn-qingse'])
+
+app.post('/api/projects/:id/narration', async (req, res) => {
+  try {
+    if (!apiKey) return res.status(400).json({ error: '未配置 MINIMAX_API_KEY，无法生成配音' })
+    const project = projectOr404(req.params.id)
+    const text = String(req.body.text || '').trim()
+    if (!text) return res.status(400).json({ error: '请填写旁白文本' })
+    if (text.length > 8000) return res.status(400).json({ error: '旁白文本过长（最多 8000 字）' })
+    const voice = NARRATION_VOICES.has(req.body.voice) ? req.body.voice : 'presenter_female'
+    const data = await miniFetch(`${apiHost}/v1/t2a_v2`, {
+      method: 'POST',
+      body: JSON.stringify({
+        model: ttsModel,
+        text,
+        stream: false,
+        voice_setting: { voice_id: voice, speed: 1, vol: 1, pitch: 0 },
+        audio_setting: { sample_rate: 32000, bitrate: 128000, format: 'mp3', channel: 1 },
+      }),
+    })
+    const hex = data?.data?.audio
+    if (!hex) throw new Error(data?.message || '语音接口没有返回音频')
+    const filename = `narration-${project.id.slice(0, 8)}.mp3`
+    fs.writeFileSync(path.join(outputDir, filename), Buffer.from(String(hex), 'hex'))
+    project.narrationFile = filename
+    project.narrationText = text.slice(0, 8000)
+    project.narrationVoice = voice
+    if (project.finalFilename && project.finalUrl) {
+      try {
+        await mergeProject(project)
+      } catch (error) {
+        project.finalError = `配音已生成，但重新合片失败：${error.message}`
+      }
+    }
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 502).json({ error: error.message }) }
+})
+
+app.post('/api/projects/:id/clear-chat', (req, res) => {
+  try {
+    const project = projectOr404(req.params.id)
+    project.messages = []
+    project.stageChoices = []
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
+})
+
+app.delete('/api/projects/:id', (req, res) => {
+  try {
+    if (!store.remove(req.params.id)) return res.status(404).json({ error: '项目不存在' })
+    res.json({ deleted: req.params.id })
   } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
 })
 
@@ -1722,7 +1856,7 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       && (phaseAtStart === 'discovery' || (phaseAtStart === 'brief_review' && !isShortAdvanceIntent(text)))
     if (shouldBuildTextPackage) {
       await makeTextPackage(project, phaseAtStart === 'brief_review' ? text : '')
-      notes.push('导演阐述、完整脚本、视听说明和制作说明已生成在右侧')
+      notes.push('导演阐述、完整脚本、视听说明和制作说明已生成在对话下方')
       reply = [reply, notes.at(-1) + '。'].filter(Boolean).join('\n')
     }
     const previousChoices = project.messages.filter((item) => item.role === 'assistant').slice(-6).flatMap((item) => item.choices || [])

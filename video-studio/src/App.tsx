@@ -122,6 +122,9 @@ type Project = {
   briefVersion?: number
   storyboardBriefVersion?: number
   briefStale?: boolean
+  narrationFile?: string
+  narrationText?: string
+  narrationVoice?: string
   shots: Shot[]
   messages: Message[]
   finalUrl?: string
@@ -193,6 +196,10 @@ function App() {
   const [uploadingImage, setUploadingImage] = useState(false)
   const [draggingImage, setDraggingImage] = useState(false)
   const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null)
+  const [imageBusy, setImageBusy] = useState<number | null>(null)
+  const [narrationDraft, setNarrationDraft] = useState('')
+  const [narrationVoice, setNarrationVoice] = useState('presenter_female')
+  const [narrationBusy, setNarrationBusy] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
   const busyRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -379,6 +386,54 @@ function App() {
     }
   }
 
+  const generateShotImage = async (index: number) => {
+    if (!project || busy) return
+    setError('')
+    setImageBusy(index)
+    try {
+      const next = await api<Project>(`/api/projects/${project.id}/shots/${index}/image-gen`, { method: 'POST', body: '{}' })
+      setProject(next)
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '首帧生成失败')
+    } finally {
+      setImageBusy(null)
+    }
+  }
+
+  const clearChat = async () => {
+    if (!project) return
+    try {
+      const next = await api<Project>(`/api/projects/${project.id}/clear-chat`, { method: 'POST', body: '{}' })
+      setProject(next)
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '清空对话失败')
+    }
+  }
+
+  const generateNarration = async () => {
+    if (!project || narrationBusy) return
+    const text = narrationDraft.trim()
+    if (!text) return setError('请填写旁白文本')
+    setNarrationBusy(true)
+    setError('')
+    try {
+      const next = await api<Project>(`/api/projects/${project.id}/narration`, { method: 'POST', body: JSON.stringify({ text, voice: narrationVoice }) })
+      setProject(next)
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '配音生成失败')
+    } finally {
+      setNarrationBusy(false)
+    }
+  }
+
+  // Reset the narration draft whenever a different project is opened.
+  useEffect(() => {
+    const preset = String(project?.narrationText || '')
+      || String((project?.textArtifacts || []).find((item) => item.type === 'script' && item.status === 'current')?.content?.voiceover || '')
+    setNarrationDraft(preset)
+    // oxlint-disable-next-line react/exhaustive-deps -- intentionally keyed by project id only
+  }, [project?.id])
+
   const preview = project?.finalUrl || (project?.shots?.find((shot) => shot.filename) ? `/media/${project.shots.find((shot) => shot.filename)?.filename}` : '')
   const messages = project?.messages || []
   const latestChoiceMessageIndex = messages.reduce((latest, message, index) => message.role === 'assistant' && message.choices?.length ? index : latest, -1)
@@ -457,11 +512,14 @@ function App() {
                       {project.briefStale ? ' · 简报已更新，分镜待重建' : ''}
                     </p>
                   </div>
-                  {project.processProgress && (
-                    <span className={`score-chip ${project.processProgress.overallQuality >= 80 ? 'pass' : project.processProgress.overallQuality >= 60 ? 'revise' : ''}`}>
-                      {project.processProgress.overallQuality || project.qualityReview?.score || 0}
-                    </span>
-                  )}
+                  <div className="inline-meta-side">
+                    {project.processProgress && (
+                      <span className={`score-chip ${project.processProgress.overallQuality >= 80 ? 'pass' : project.processProgress.overallQuality >= 60 ? 'revise' : ''}`}>
+                        {project.processProgress.overallQuality || project.qualityReview?.score || 0}
+                      </span>
+                    )}
+                    <button type="button" className="meta-clear" title="清空本项目的对话记录" onClick={() => { if (window.confirm('清空本项目的对话记录？创作产物与分镜会保留。')) clearChat() }}><X size={13} />清空对话</button>
+                  </div>
                 </div>
               )}
               {project && <WorkflowPanel project={project} busy={busy} status={status} onAction={runProjectAction} />}
@@ -479,7 +537,15 @@ function App() {
                         <div className="shot-time">S{shot.index + 1} · 00:{String((project?.shots || []).slice(0, shot.index).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')}–00:{String((project?.shots || []).slice(0, shot.index + 1).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')} · {shot.duration || 6} 秒</div>
                         <h3>{shot.title}</h3>
                         <p>{shot.description}</p>
-                        <footer><span>{shot.imageFile ? '已绑参考图' : '点左侧上传此镜参考图'}</span><StatusText value={shot.status} /></footer>
+                        <footer>
+                          <span>{shot.imageFile ? '已绑参考图' : '点左侧上传此镜参考图'}</span>
+                          <span className="shot-actions">
+                            <button type="button" className="shot-ai-frame" disabled={imageBusy === shot.index || busy} onClick={() => generateShotImage(shot.index)}>
+                              {imageBusy === shot.index ? <LoaderCircle className="spin" size={12} /> : <Sparkles size={12} />}AI 首帧
+                            </button>
+                            <StatusText value={shot.status} />
+                          </span>
+                        </footer>
                         {['ready_to_generate', 'generating'].includes(project?.phase || '') && (
                           <label className="shot-engine-row">引擎
                             <select className="shot-engine" value={shot.engine || ''} disabled={busy} onChange={(event) => setShotEngine(shot.index, event.target.value)}>
@@ -549,6 +615,21 @@ function App() {
                 </div>
               </div>
               <div className="player">{preview === 'demo://preview' ? <div className="demo-preview"><Film /><b>演示成片预览</b><span>阶段流转已完成，未执行真实视频推理</span></div> : preview ? <video src={preview} controls /> : <div className="empty-player"><span>镜头完成后会自动出现在这里</span></div>}</div>
+              <div className="narration-row">
+                <textarea value={narrationDraft} onChange={(event) => setNarrationDraft(event.target.value)} placeholder="旁白文本（生成后自动替换成片原声，交付前后都可随时生成）" rows={2} />
+                <div className="narration-side">
+                  <select value={narrationVoice} onChange={(event) => setNarrationVoice(event.target.value)}>
+                    <option value="presenter_female">讲解女声</option>
+                    <option value="presenter_male">讲解男声</option>
+                    <option value="female-shaonv">少女音</option>
+                    <option value="male-qn-qingse">青年男声</option>
+                  </select>
+                  <button type="button" disabled={narrationBusy || !narrationDraft.trim()} onClick={generateNarration}>
+                    {narrationBusy ? <><LoaderCircle className="spin" size={15} />合成中</> : <><Sparkles size={15} />生成配音</>}
+                  </button>
+                </div>
+              </div>
+              {project?.narrationFile && <p className="narration-note">配音已生成（{project.narrationVoice}）：下次合片或重新生成配音时，成片会用旁白替换镜头原声。</p>}
             </section>
           </main>
         </>
@@ -1019,18 +1100,33 @@ function StatusText({ value }: { value: string }) {
 
 function HistoryPage({ onOpen }: { onOpen: (id: string) => void }) {
   const [items, setItems] = useState<Project[]>([])
-  useEffect(() => { api<Project[]>('/api/projects').then(setItems).catch(() => {}) }, [])
+  const [pageError, setPageError] = useState('')
+  const reload = () => api<Project[]>('/api/projects').then(setItems).catch(() => {})
+  useEffect(() => { reload() }, [])
+  const deleteProject = async (id: string, title: string) => {
+    if (!window.confirm(`删除项目「${title}」？对话、分镜、成片与素材会一起删除，不可恢复。`)) return
+    try {
+      await api(`/api/projects/${id}`, { method: 'DELETE' })
+      reload()
+    } catch (item) {
+      setPageError(item instanceof Error ? item.message : '删除失败')
+    }
+  }
   return (
     <main className="page">
       <h1>项目</h1>
       <p>聊天、分镜、镜头任务会一起保存在本机。</p>
+      {pageError && <div className="error"><CircleAlert size={18} />{pageError}<button onClick={() => setPageError('')}><X size={16} /></button></div>}
       <div className="history-list">
         {items.length ? items.map((item) => (
-          <button key={item.id} className="history-row" onClick={() => onOpen(item.id)}>
-            <Film />
-            <span><b>{item.title}</b><small>{item.idea || '尚无简介'} · {item.shots?.length || 0} 镜</small></span>
-            <ChevronRight />
-          </button>
+          <div key={item.id} className="history-row">
+            <button className="history-open" onClick={() => onOpen(item.id)}>
+              <Film />
+              <span><b>{item.title}</b><small>{item.idea || '尚无简介'} · {item.shots?.length || 0} 镜</small></span>
+              <ChevronRight />
+            </button>
+            <button className="history-delete" title="删除项目" onClick={() => deleteProject(item.id, item.title)}><X /></button>
+          </div>
         )) : <div className="empty">还没有保存的项目</div>}
       </div>
     </main>

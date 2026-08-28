@@ -170,5 +170,12 @@ export function createProjectStore(root) {
     return targetName
   }
 
-  return { projectsDir, save, load, list, create, latest, saveImage, saveImageBuffer, imagePath, imageDataUrl, copyImage }
+  const remove = (id) => {
+    const dir = dirOf(id)
+    if (!fs.existsSync(dir)) return false
+    fs.rmSync(dir, { recursive: true, force: true })
+    return true
+  }
+
+  return { projectsDir, save, load, list, create, latest, remove, saveImage, saveImageBuffer, imagePath, imageDataUrl, copyImage }
 }

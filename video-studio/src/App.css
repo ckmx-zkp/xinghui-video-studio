@@ -52,3 +52,24 @@
 .shot-engine{height:26px;border:1px solid #d8dbe0;border-radius:6px;background:#fff;font-size:11px;color:#43454b;padding:0 6px}
 .asset-card video{width:100%;height:150px;object-fit:cover;background:#000;border-radius:4px}
 .asset-video-tag{border:1px solid #d8dbe0;background:#fafbfc;border-radius:6px;padding:6px 10px;font-size:11px;color:#777982}
+.inline-meta-side{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.meta-clear{border:1px solid #d8dbe0;background:#fff;border-radius:8px;padding:5px 10px;font-size:12px;color:#555760;cursor:pointer;display:flex;align-items:center;gap:4px}
+.meta-clear:hover{border-color:var(--accent);color:var(--accent)}
+.shot-actions{display:flex;align-items:center;gap:8px}
+.shot-ai-frame{border:1px solid var(--accent);color:var(--accent);background:#fff;border-radius:6px;height:26px;padding:0 8px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px}
+.shot-ai-frame:disabled{opacity:.5;cursor:wait}
+.narration-row{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px;align-items:stretch}
+.narration-row textarea{border:1px solid #d8dbe0;border-radius:8px;padding:8px 10px;resize:vertical;font-size:13px;min-height:46px}
+.narration-side{display:flex;flex-direction:column;gap:6px}
+.narration-side select{height:32px;border:1px solid #d8dbe0;border-radius:8px;background:#fff;font-size:12px;padding:0 6px}
+.narration-side button{border:0;background:var(--accent);color:#fff;border-radius:8px;padding:7px 12px;font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;justify-content:center}
+.narration-side button:disabled{opacity:.5;cursor:wait}
+.narration-note{margin:8px 0 0;color:#90929a;font-size:11px}
+.history-row{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--line)}
+.history-open{flex:1;min-height:76px;display:flex;align-items:center;gap:14px;padding:13px 5px;background:transparent;border:0;cursor:pointer;text-align:left}
+.history-open span{flex:1;display:grid;gap:5px}
+.history-open small{color:#777}
+.history-open svg:last-child{color:#999}
+.history-delete{border:1px solid #f0c9c9;background:#fff5f5;color:#bb3636;border-radius:8px;width:36px;height:36px;display:grid;place-items:center;cursor:pointer}
+.history-delete svg{width:15px}
+.history-delete:hover{background:#ffe9e9}
