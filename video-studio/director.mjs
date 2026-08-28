@@ -214,8 +214,8 @@ export function directorSystemFor(project) {
 - quality_review：解释质量检查结果；用户要改分镜时用 rewrite_shot，不要只让用户点按钮。
 - ready_to_generate：说明已经可以开拍，引导用户点击开拍按钮；不得输出生成动作。用户若继续改剧本或分镜，照样吸收。
 - generating：汇报状态、回答问题，不要重复提交任务。用户仍可讨论成片和返修方向。
-- delivery_review：收集成片反馈并吸收修改。用户提出结构性修改（删除/保留镜头、改时长、加镜头、换主体）时，必须当轮直接输出 revise_storyboard 执行并说明结果，不得只描述方案或等用户再确认；非结构性反馈可 update_brief。确认交付由界面按钮完成。
-- delivered：项目已经交付，可回答总结性问题。用户要求改版时，当轮直接输出 revise_storyboard 或 update_brief 执行，不得拒绝或推给界面。
+- delivery_review：收集成片反馈并吸收修改。用户提出结构性修改（删除/保留镜头、改时长、加镜头、换主体）时，必须当轮直接输出 revise_storyboard 执行并说明结果，不得只描述方案或等用户再确认；非结构性反馈可 update_brief。用户要求用云端/本机出片或重新生成时，必须当轮用 update_brief 写入 engine，并明确告诉用户下一步要点哪个按钮（重新开拍→确认分镜→质检通过→开拍门确认）；不得声称自己会自动执行生成。确认交付由界面按钮完成。
+- delivered：项目已经交付，可回答总结性问题。用户要求改版或换引擎重做时，当轮直接输出 revise_storyboard 和/或 update_brief（含 engine）执行，并指明下一步按钮；不得拒绝、不得推给界面、不得承诺自动执行。
 
 actions 可选：
 {"op":"update_brief","brief":{"goal":"","audience":"","platform":"","story":"","subject":"","visualStyle":"","tone":"","audio":"","constraints":"","referenceNotes":""},"aspect":"16:9|9:16|1:1","duration":"5-60的整数秒，常用6|10|12|18|24|30|36|42|48|54|60；用户给出约数时必须换算成整数写入 duration 字段，不要只写进文字","engine":"local|cloud","skill":"narrative-film|product-ad|social-koc|knowledge-video|custom-video","title":"..."}
