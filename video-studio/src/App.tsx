@@ -1088,7 +1088,7 @@ function GenerationProgress({ shots }: { shots: Shot[] }) {
       ? `S${active.index + 1} · ${detail?.label || '正在连接 H3 工作流'}（阶段估算 ${detail?.min ?? 0}–${detail?.max ?? 99}%）`
       : `S${active.index + 1} · ${detail?.label || '采样生成视频帧'} · ${exactSteps} 步（精确 ${exactShotPercent}%）`
     : waiting ? `${waiting} 镜正在排队` : complete === total ? '镜头已完成，正在合成成片' : '正在同步生成状态')
-    + (active && elapsedMin != null ? ` · 已运行 ${elapsedMin} 分钟（本机单镜一般 6-15 分钟，10 秒镜更久）` : '')
+    + (active && elapsedMin != null ? ` · 已运行 ${elapsedMin} 分钟（本机实测单镜 20-50 分钟，波动大，极端可达 1.5 小时）` : '')
   return (
     <div className="generation-progress" aria-live="polite">
       <div className="generation-progress-head"><b>成片完成</b><span>{complete}/{shots.length} 镜 · {overallPercent}%</span></div>
