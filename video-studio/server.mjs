@@ -44,6 +44,10 @@ fs.mkdirSync(localDir, { recursive: true })
 const store = createProjectStore(root)
 const BRIEF_KEYS = ['goal', 'audience', 'platform', 'story', 'subject', 'visualStyle', 'tone', 'audio', 'constraints', 'referenceNotes']
 const PROJECT_PHASES = new Set(['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate', 'generating', 'delivery_review', 'delivered'])
+// One director turn per project at a time. The UI may abort its wait while the
+// model call still finishes server-side; the lock keeps a resent message from
+// racing and clobbering the in-flight turn.
+const chatLocks = new Set()
 const SKILLS = new Set(['narrative-film', 'product-ad', 'social-koc', 'knowledge-video', 'custom-video'])
 
 // Natural-language confirmations advance one planning gate. “Direct start” is
@@ -889,8 +893,11 @@ async function startLocalShot(project, shot) {
 }
 
 async function startCloudShot(project, shot) {
-  if (Number(shot.duration || 6) !== 6) throw new Error('云端当前只支持单镜 6 秒；请切换为本机生成，或拆成 6 秒镜头后再开拍')
-  const payload = { model: 'MiniMax-Hailuo-2.3', prompt: shot.video_prompt, duration: 6, resolution: '768P', aigc_watermark: false }
+  const duration = Number(shot.duration || 6)
+  if (![6, 10].includes(duration)) {
+    throw new Error(`第 ${shot.index + 1} 镜时长 ${duration} 秒；云端只支持 6/10 秒，请对本镜改用本机生成或调整分镜结构`)
+  }
+  const payload = { model: 'MiniMax-Hailuo-2.3', prompt: shot.video_prompt, duration, resolution: '768P', aigc_watermark: false }
   const firstFrame = shot.imageFile ? store.imageDataUrl(project.id, shot.imageFile) : ''
   if (firstFrame) payload.first_frame_image = firstFrame
   const data = await miniFetch(`${apiHost}/v1/video_generation`, { method: 'POST', body: JSON.stringify(payload) })
@@ -1169,15 +1176,30 @@ async function reviewStoryboard(project) {
 app.get('/api/projects', (_req, res) => res.json(store.list().map((item) => ({ ...item, messages: undefined }))))
 app.post('/api/projects', (_req, res) => res.json(store.create()))
 app.get('/api/assets', (_req, res) => {
-  const assets = store.list().flatMap((project) => (project.referenceImages || []).map((filename, index) => ({
-    id: `${project.id}:${filename}`,
-    projectId: project.id,
-    projectTitle: project.title,
-    filename,
-    title: project.shots?.find((shot) => shot.imageFile === filename)?.title || `参考素材 ${index + 1}`,
-    url: `/api/projects/${project.id}/media/${encodeURIComponent(filename)}`,
-    updatedAt: project.updatedAt,
-  })))
+  const assets = store.list().flatMap((project) => [
+    ...(project.referenceImages || []).map((filename, index) => ({
+      id: `${project.id}:${filename}`,
+      projectId: project.id,
+      projectTitle: project.title,
+      filename,
+      type: 'image',
+      title: project.shots?.find((shot) => shot.imageFile === filename)?.title || `参考素材 ${index + 1}`,
+      url: `/api/projects/${project.id}/media/${encodeURIComponent(filename)}`,
+      updatedAt: project.updatedAt,
+    })),
+    ...(project.shots || [])
+      .filter((shot) => shot.filename && !project.demoPreview)
+      .map((shot) => ({
+        id: `${project.id}:video:${shot.id}`,
+        projectId: project.id,
+        projectTitle: project.title,
+        filename: shot.filename,
+        type: 'video',
+        title: `${shot.title || `镜头 ${shot.index + 1}`} · 生成片段`,
+        url: `/media/${shot.filename}`,
+        updatedAt: project.updatedAt,
+      })),
+  ])
   res.json(assets)
 })
 app.get('/api/projects/current', async (_req, res) => {
@@ -1489,9 +1511,23 @@ app.post('/api/projects/:id/generate', async (req, res) => {
     }
     const targets = resolveShotList(req.body.shots || 'pending', project)
     if (!targets.length) return res.status(409).json({ error: '没有需要生成的镜头' })
-    if (project.engine === 'cloud') {
-      if (req.body.confirmCloud !== true || Number(req.body.confirmedCount) !== targets.length) {
-        return res.status(409).json({ error: `云端生成将消耗 ${targets.length} 次额度，请明确确认` })
+    const engineFor = (shot) => (shot.engine === 'local' || shot.engine === 'cloud' ? shot.engine : project.engine)
+    const cloudTargets = targets.filter((shot) => engineFor(shot) === 'cloud')
+    if (cloudTargets.length) {
+      if (req.body.confirmCloud !== true || Number(req.body.confirmedCount) !== cloudTargets.length) {
+        return res.status(409).json({ error: `云端生成将消耗 ${cloudTargets.length} 次额度，请明确确认` })
+      }
+      if (!directorDemoMode) {
+        try {
+          const quota = await miniFetch('https://www.minimaxi.com/v1/token_plan/remains')
+          const video = quota.model_remains?.find((item) => item.model_name === 'video')
+          if (video) {
+            const remain = Math.max(0, Number(video.current_interval_total_count || 0) - Number(video.current_interval_usage_count || 0))
+            if (remain < cloudTargets.length) {
+              return res.status(409).json({ error: `云端额度不足：当前窗口剩余 ${remain} 次，本次需要 ${cloudTargets.length} 次；可把部分镜头改回本机生成，或等额度刷新` })
+            }
+          }
+        } catch { /* 额度查询失败时不阻塞开拍，交由云端接口在提交时校验 */ }
       }
     }
     project.phase = 'generating'
@@ -1500,12 +1536,34 @@ app.post('/api/projects/:id/generate', async (req, res) => {
     project.finalError = ''
     store.save(project)
     for (const shot of targets) {
-      if (project.engine === 'cloud') await startCloudShot(project, shot)
+      if (engineFor(shot) === 'cloud') await startCloudShot(project, shot)
       else await startLocalShot(project, shot)
       store.save(project)
     }
     res.json(await refreshProject(project))
   } catch (error) { res.status(error.status || 502).json({ error: error.message }) }
+})
+
+app.post('/api/projects/:id/set-engine', (req, res) => {
+  try {
+    const project = projectOr404(req.params.id)
+    if (!['local', 'cloud'].includes(req.body.engine)) return res.status(400).json({ error: '生成方式只能是 local 或 cloud' })
+    project.engine = req.body.engine
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
+})
+
+app.post('/api/projects/:id/shots/:index/engine', (req, res) => {
+  try {
+    const project = projectOr404(req.params.id)
+    const shot = project.shots.find((item) => item.index === Number(req.params.index))
+    if (!shot) return res.status(404).json({ error: '镜头不存在' })
+    const value = String(req.body.engine || '')
+    shot.engine = ['local', 'cloud'].includes(value) ? value : ''
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
 })
 
 async function completeDirectorTurn(project, history, options = {}) {
@@ -1572,6 +1630,8 @@ async function completeDirectorTurn(project, history, options = {}) {
 }
 
 app.post('/api/projects/:id/chat', async (req, res) => {
+  if (chatLocks.has(req.params.id)) return res.status(409).json({ error: '导演还在处理上一轮对话，请稍候再发' })
+  chatLocks.add(req.params.id)
   let project
   let rollbackProject
   let userTurnPersisted = false
@@ -1675,6 +1735,8 @@ app.post('/api/projects/:id/chat', async (req, res) => {
   } catch (error) {
     if (userTurnPersisted && rollbackProject) store.save(rollbackProject)
     res.status(error.status || 502).json({ error: error.message })
+  } finally {
+    chatLocks.delete(req.params.id)
   }
 })
 

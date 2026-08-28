@@ -45,7 +45,8 @@
 
 ## 已知限制
 
-- 云端仍固定 Hailuo 2.3、768P、6 秒。
+- 云端 Hailuo 2.3、768P、单镜 6/10 秒（1080P 暂未开放）；逐镜可选本机或云端，开拍前会做额度预检。
+- 对话等待中可点“停止等待”中断前端等待；导演模型调用仍在后台完成（服务端有项目级互斥锁，避免连发串写）。
 - 16GB 卡上单镜头可能要数分钟到十几分钟；一次只跑一个任务。
 - FFmpeg 合并仍是 concat demuxer 无损拼接。
 - 官方 INT8/NVFP4 全套未下载，也不适合当前 16GB 方案。
@@ -54,7 +55,10 @@
 
 - `POST /api/local/generate` `{ prompt, firstFrame?, aspect, duration }`
 - `GET /api/local/task/:id` 以及统一的 `GET /api/task/:id`
-- `GET /api/status` 含 `models.ready` 与各文件是否存在
+- `GET /api/status` 含 `models.ready`、各文件是否存在、`quota.resetMs`（额度刷新倒计时毫秒）
+- `POST /api/projects/:id/set-engine` `{ engine }`（项目默认生成方式，不做下游失效）
+- `POST /api/projects/:id/shots/:index/engine` `{ engine }`（逐镜覆盖，空串=跟随项目）
+- `GET /api/assets` 含参考图（type=image）与已生成镜头片段（type=video，只读）
 
 ## 验收命令
 

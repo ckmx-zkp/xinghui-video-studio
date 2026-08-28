@@ -553,3 +553,63 @@ describe('brief and storyboard consistency', () => {
     assert.ok(project.textArtifacts.length >= 4)
   })
 })
+
+describe('engine switching and asset library', () => {
+  it('switches engine at project and per-shot level without invalidating the storyboard', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    fs.writeFileSync(file, JSON.stringify({
+      ...created,
+      phase: 'ready_to_generate',
+      duration: 18,
+      briefVersion: 1,
+      storyboardBriefVersion: 1,
+      selectedConceptId: 'c1',
+      concepts: [{ id: 'c1', title: 'A', logline: 'l', narrative: 'n', visualHook: 'v', ending: 'e' }],
+      shots: [
+        { id: 'a', index: 0, title: '一', description: 'd', video_prompt: 'p1', status: 'ready', duration: 6 },
+        { id: 'b', index: 1, title: '二', description: 'd', video_prompt: 'p2', status: 'ready', duration: 6 },
+        { id: 'c', index: 2, title: '三', description: 'd', video_prompt: 'p3', status: 'ready', duration: 6 },
+      ],
+    }, null, 2))
+
+    const engineSwitch = await fetch(`${baseUrl}/api/projects/${created.id}/set-engine`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine: 'cloud' }),
+    })
+    assert.equal(engineSwitch.status, 200)
+    const withEngine = await engineSwitch.json()
+    assert.equal(withEngine.engine, 'cloud')
+    assert.equal(withEngine.phase, 'ready_to_generate')
+    assert.equal(withEngine.shots.length, 3)
+
+    const shotEngine = await fetch(`${baseUrl}/api/projects/${created.id}/shots/2/engine`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine: 'local' }),
+    })
+    assert.equal(shotEngine.status, 200)
+    const withShotEngine = await shotEngine.json()
+    assert.equal(withShotEngine.shots[2].engine, 'local')
+    assert.equal(withShotEngine.shots[0].engine || '', '')
+
+    const mismatch = await fetch(`${baseUrl}/api/projects/${created.id}/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shots: 'pending', confirmCloud: true, confirmedCount: 3 }),
+    })
+    assert.equal(mismatch.status, 409)
+    assert.match((await mismatch.json()).error, /消耗 2 次/)
+  })
+
+  it('lists generated shot videos in the asset library', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    fs.writeFileSync(file, JSON.stringify({
+      ...created,
+      shots: [{ id: 's1', index: 0, title: '开场', description: 'd', video_prompt: 'p', status: 'Success', filename: 'h3-test.mp4' }],
+    }, null, 2))
+    const assets = await fetch(`${baseUrl}/api/assets`).then((response) => response.json())
+    const video = assets.find((item) => item.id === `${created.id}:video:s1`)
+    assert.ok(video)
+    assert.equal(video.type, 'video')
+    assert.equal(video.url, '/media/h3-test.mp4')
+  })
+})

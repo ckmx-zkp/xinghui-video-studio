@@ -6,6 +6,7 @@ type Shot = {
   id: string
   index: number
   duration?: number
+  engine?: string
   title: string
   description: string
   video_prompt: string
@@ -75,7 +76,7 @@ type QualityReview = {
   checks: Array<{ label: string; status: 'pass' | 'warning' | 'fail'; note: string }>
   recommendations: string[]
 }
-type Asset = { id: string; projectId: string; projectTitle: string; filename: string; title: string; url: string; updatedAt: string }
+type Asset = { id: string; projectId: string; projectTitle: string; filename: string; type?: string; title: string; url: string; updatedAt: string }
 type ProcessStep = {
   id: string
   label: string
@@ -136,7 +137,7 @@ type Status = {
   videoDemo?: boolean
   videoMode?: 'live' | 'demo'
   model: string
-  quota: { used: number; total: number; weeklyUsed: number; weeklyTotal: number }
+  quota: { used: number; total: number; weeklyUsed: number; weeklyTotal: number; resetMs?: number }
   models?: { ready: boolean; simulated?: boolean }
 }
 
@@ -194,6 +195,7 @@ function App() {
   const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const busyRef = useRef<HTMLDivElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const refreshStatus = () => api<Status>('/api/status').then(setStatus)
   const loadProject = async (id?: string) => {
@@ -201,12 +203,21 @@ function App() {
     setProject(next)
     return next
   }
+  const stopThinking = () => abortRef.current?.abort()
 
   const inflight = (project?.shots || []).filter((shot) => shot.taskId && !['Success', 'Fail'].includes(shot.status)).map((shot) => shot.taskId).join(',')
   // Load current project and backend status once after mount.
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
     Promise.all([refreshStatus(), loadProject()]).catch((item) => setError(item.message))
+  }, [])
+
+  // Keep the quota window visible: refresh every 5 minutes and on focus.
+  useEffect(() => {
+    const timer = window.setInterval(() => { refreshStatus().catch(() => {}) }, 300000)
+    const onFocus = () => { refreshStatus().catch(() => {}) }
+    window.addEventListener('focus', onFocus)
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
   }, [])
 
   useEffect(() => {
@@ -247,20 +258,29 @@ function App() {
       }],
     } : current)
     try {
+      const controller = new AbortController()
+      abortRef.current = controller
       const next = await api<Project>(`/api/projects/${projectId}/chat`, {
         method: 'POST',
         body: JSON.stringify({ message: text, attachmentIds: submittedAttachment ? [submittedAttachment.id] : [] }),
+        signal: controller.signal,
       })
       setProject((current) => current?.id === projectId ? next : current)
       refreshStatus().catch(() => {})
     } catch (item) {
-      setProject((current) => current?.id === projectId ? { ...current, messages: current.messages.filter((message) => message.id !== optimisticId) } : current)
-      if (submittedAttachment) setPendingAttachment((current) => current || submittedAttachment)
-      if (!override) setDraft((current) => current || submittedDraft)
-      setError(item instanceof Error ? item.message : '对话失败')
+      if (item instanceof DOMException && item.name === 'AbortError') {
+        setError('已停止等待。导演可能仍在后台完成本轮，完成后会自动出现在对话里。')
+        window.setTimeout(() => { loadProject(projectId).catch(() => {}) }, 4000)
+      } else {
+        setProject((current) => current?.id === projectId ? { ...current, messages: current.messages.filter((message) => message.id !== optimisticId) } : current)
+        if (submittedAttachment) setPendingAttachment((current) => current || submittedAttachment)
+        if (!override) setDraft((current) => current || submittedDraft)
+        setError(item instanceof Error ? item.message : '对话失败')
+      }
     } finally {
       setBusy(false)
       setPendingChoiceId(null)
+      abortRef.current = null
     }
   }
 
@@ -345,9 +365,28 @@ function App() {
     }
   }
 
+  const setShotEngine = async (index: number, engine: string) => {
+    if (!project) return
+    setError('')
+    try {
+      const next = await api<Project>(`/api/projects/${project.id}/shots/${index}/engine`, {
+        method: 'POST',
+        body: JSON.stringify({ engine }),
+      })
+      setProject(next)
+    } catch (item) {
+      setError(item instanceof Error ? item.message : '镜头引擎设置失败')
+    }
+  }
+
   const preview = project?.finalUrl || (project?.shots?.find((shot) => shot.filename) ? `/media/${project.shots.find((shot) => shot.filename)?.filename}` : '')
   const messages = project?.messages || []
   const latestChoiceMessageIndex = messages.reduce((latest, message, index) => message.role === 'assistant' && message.choices?.length ? index : latest, -1)
+  const quotaInfo = status?.quota
+  const resetText = quotaInfo?.resetMs
+    ? quotaInfo.resetMs >= 3600000 ? `约 ${Math.round(quotaInfo.resetMs / 3600000)} 小时后刷新` : `约 ${Math.max(1, Math.round(quotaInfo.resetMs / 60000))} 分钟后刷新`
+    : ''
+  const quotaExpiring = Boolean(quotaInfo?.total && quotaInfo.resetMs && quotaInfo.resetMs < 43200000 && quotaInfo.used < quotaInfo.total)
 
   return (
     <div className="app-shell chat-app">
@@ -356,7 +395,7 @@ function App() {
         <div className="connections">
           <span className={status?.m3 ? 'online' : 'offline'}><i />导演 {status?.directorMode === 'demo' ? '固定演示' : status?.m3 ? `${status.model} 已连接` : '未连接'}</span>
           <span className={status?.comfy ? 'online' : 'offline'}><i />本机生成 {status?.videoDemo ? '模拟模式' : status?.comfy ? '就绪' : '未启动'}</span>
-          <span className="quota"><Cloud size={17} />{status?.quota.total ? `今日成片额度 ${status.quota.used}/${status.quota.total}` : '云端额度未连接'}</span>
+          <span className={`quota${quotaExpiring ? ' quota-soon' : ''}`}><Cloud size={17} />{quotaInfo?.total ? `今日 ${quotaInfo.used}/${quotaInfo.total}${resetText ? ` · ${resetText}` : ''}${quotaExpiring ? ` · ${quotaInfo.total - quotaInfo.used} 次将过期` : ''}` : '云端额度未连接'}</span>
         </div>
       </header>
       <aside className="sidebar">
@@ -402,7 +441,69 @@ function App() {
                   )}
                 </div>
               ))}
-              {busy && <div ref={busyRef} className="bubble assistant muted" role="status" aria-live="polite"><LoaderCircle className="spin" />导演正在想下一步…</div>}
+              {busy && (
+                <div ref={busyRef} className="bubble assistant muted" role="status" aria-live="polite">
+                  <LoaderCircle className="spin" />导演正在想下一步…
+                  <button type="button" className="stop-think" onClick={stopThinking}><X size={13} />停止等待</button>
+                </div>
+              )}
+              {project && (
+                <div className="inline-meta">
+                  <div>
+                    <h2>{project.title}</h2>
+                    <p>
+                      {phaseLabel[project.phase || 'discovery']} · {project.aspect} · {project.engine === 'cloud' ? '云端成片' : '本机草稿'}
+                      {project.processProgress ? ` · 完整度 ${project.processProgress.overallCompleteness}%` : ''}
+                      {project.briefStale ? ' · 简报已更新，分镜待重建' : ''}
+                    </p>
+                  </div>
+                  {project.processProgress && (
+                    <span className={`score-chip ${project.processProgress.overallQuality >= 80 ? 'pass' : project.processProgress.overallQuality >= 60 ? 'revise' : ''}`}>
+                      {project.processProgress.overallQuality || project.qualityReview?.score || 0}
+                    </span>
+                  )}
+                </div>
+              )}
+              {project && <WorkflowPanel project={project} busy={busy} status={status} onAction={runProjectAction} />}
+              {Boolean(project?.shots?.length) && (
+                <div className="inline-shots">
+                  <div className="inline-block-title"><Film />分镜</div>
+                  {(project?.shots || []).map((shot) => (
+                    <article key={shot.id} className="shot">
+                      <label className="shot-thumb">
+                        <span>{shot.index + 1}</span>
+                        {shot.filename && !project?.demoPreview ? <video src={`/media/${shot.filename}`} muted /> : shot.filename ? <Check /> : shot.imageFile ? <img src={`/api/projects/${project?.id}/media/${shot.imageFile}`} alt={shot.title} /> : <ImagePlus />}
+                        <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => attachShotImage(shot.index, event.target.files?.[0])} />
+                      </label>
+                      <div className="shot-body">
+                        <div className="shot-time">S{shot.index + 1} · 00:{String((project?.shots || []).slice(0, shot.index).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')}–00:{String((project?.shots || []).slice(0, shot.index + 1).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')} · {shot.duration || 6} 秒</div>
+                        <h3>{shot.title}</h3>
+                        <p>{shot.description}</p>
+                        <footer><span>{shot.imageFile ? '已绑参考图' : '点左侧上传此镜参考图'}</span><StatusText value={shot.status} /></footer>
+                        {['ready_to_generate', 'generating'].includes(project?.phase || '') && (
+                          <label className="shot-engine-row">引擎
+                            <select className="shot-engine" value={shot.engine || ''} disabled={busy} onChange={(event) => setShotEngine(shot.index, event.target.value)}>
+                              <option value="">跟随项目（{project?.engine === 'cloud' ? '云端' : '本机'}）</option>
+                              <option value="local">本机</option>
+                              <option value="cloud">云端</option>
+                            </select>
+                          </label>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+              {project && (
+                <details className="inline-collapsible">
+                  <summary><SlidersHorizontal size={15} />创作画布 · 过程完整度 · 制作计划</summary>
+                  <div className="inline-collapsible-body">
+                    <CreativeArtifacts project={project} busy={busy} onSave={saveArtifactStandards} />
+                    {project.processProgress && <ProcessBoard progress={project.processProgress} />}
+                    {project.productionPlan.length > 0 && <ProductionCanvas project={project} />}
+                  </div>
+                </details>
+              )}
             </div>
             {error && <div className="error"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
             <form className={`chat-input ${draggingImage ? 'is-dragging' : ''} ${busy ? 'is-busy' : ''}`} onSubmit={(event) => { event.preventDefault(); send() }} onDragOver={(event) => {
@@ -450,45 +551,6 @@ function App() {
               <div className="player">{preview === 'demo://preview' ? <div className="demo-preview"><Film /><b>演示成片预览</b><span>阶段流转已完成，未执行真实视频推理</span></div> : preview ? <video src={preview} controls /> : <div className="empty-player"><span>镜头完成后会自动出现在这里</span></div>}</div>
             </section>
           </main>
-          <aside className="plan-rail">
-            <div className="rail-head">
-              <div>
-                <h2>{project?.title || '制作计划'}</h2>
-                <p>
-                  {phaseLabel[project?.phase || 'discovery']} · {project?.aspect} · {project?.engine === 'cloud' ? '云端成片' : '本机草稿'}
-                  {project?.processProgress ? ` · 完整度 ${project.processProgress.overallCompleteness}%` : ''}
-                  {project?.briefStale ? ' · 简报已更新，分镜待重建' : ''}
-                </p>
-              </div>
-              {project?.processProgress && (
-                <span className={`score-chip ${project.processProgress.overallQuality >= 80 ? 'pass' : project.processProgress.overallQuality >= 60 ? 'revise' : ''}`}>
-                  {project.processProgress.overallQuality || project.qualityReview?.score || 0}
-                </span>
-              )}
-            </div>
-            {project && <CreativeArtifacts project={project} busy={busy} onSave={saveArtifactStandards} />}
-            {project?.processProgress && <ProcessBoard progress={project.processProgress} />}
-            {project && <WorkflowPanel project={project} busy={busy} onAction={runProjectAction} />}
-            {project && project.productionPlan.length > 0 && <ProductionCanvas project={project} />}
-            <div className="shots">
-              {(project?.shots || []).map((shot) => (
-                <article key={shot.id} className="shot">
-                  <label className="shot-thumb">
-                    <span>{shot.index + 1}</span>
-                    {shot.filename && !project?.demoPreview ? <video src={`/media/${shot.filename}`} muted /> : shot.filename ? <Check /> : shot.imageFile ? <img src={`/api/projects/${project?.id}/media/${shot.imageFile}`} alt={shot.title} /> : <ImagePlus />}
-                    <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => attachShotImage(shot.index, event.target.files?.[0])} />
-                  </label>
-                  <div className="shot-body">
-                    <div className="shot-time">S{shot.index + 1} · 00:{String((project?.shots || []).slice(0, shot.index).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')}–00:{String((project?.shots || []).slice(0, shot.index + 1).reduce((total, item) => total + Number(item.duration || 6), 0)).padStart(2, '0')} · {shot.duration || 6} 秒</div>
-                    <h3>{shot.title}</h3>
-                    <p>{shot.description}</p>
-                    <footer><span>{shot.imageFile ? '已绑参考图' : '点左侧上传此镜参考图'}</span><StatusText value={shot.status} /></footer>
-                  </div>
-                </article>
-              ))}
-              {!project?.shots?.length && <div className="empty-shots">分镜出现后，可以把不同参考图拖到每一镜上。</div>}
-            </div>
-          </aside>
         </>
       )}
 
@@ -697,14 +759,22 @@ function ProcessBoard({ progress }: { progress: ProcessProgress }) {
   )
 }
 
-function WorkflowPanel({ project, busy, onAction }: {
+function WorkflowPanel({ project, busy, status, onAction }: {
   project: Project
   busy: boolean
+  status: Status | null
   onAction: (action: string, body?: Record<string, unknown>) => void
 }) {
   const pending = project.shots.filter((shot) => !shot.taskId || shot.status === 'Fail' || shot.status === 'ready')
   const processing = project.shots.filter((shot) => shot.taskId && !['Success', 'Fail'].includes(shot.status)).length
   const failed = project.shots.filter((shot) => shot.status === 'Fail').length
+  const engineOf = (shot: Shot) => (shot.engine === 'local' || shot.engine === 'cloud' ? shot.engine : project.engine)
+  const cloudPending = pending.filter((shot) => engineOf(shot) === 'cloud').length
+  const quota = status?.quota
+  const quotaRemain = quota?.total ? Math.max(0, quota.total - quota.used) : null
+  const expireHint = quota?.resetMs && quota.resetMs < 43200000 && (quotaRemain ?? 0) > 0
+    ? `剩余 ${quotaRemain} 次云端额度将在约 ${quota.resetMs >= 3600000 ? `${Math.round(quota.resetMs / 3600000)} 小时` : `${Math.max(1, Math.round(quota.resetMs / 60000))} 分钟`}后刷新，建议先用云端出片`
+    : ''
 
   if (project.phase === 'discovery') {
     return (
@@ -773,15 +843,22 @@ function WorkflowPanel({ project, busy, onAction }: {
   }
 
   if (project.phase === 'ready_to_generate') {
-    const cloud = project.engine === 'cloud'
     return (
-      <section className={`workflow-panel shoot-panel ${cloud ? 'cloud-shoot' : ''}`}>
+      <section className={`workflow-panel shoot-panel ${cloudPending ? 'cloud-shoot' : ''}`}>
         <div className="workflow-title"><Play />准备开拍</div>
-        <p>{pending.length} 个镜头 · {cloud ? `将消耗 ${pending.length} 次云端额度` : '本机生成，不消耗云端额度'}</p>
+        <label className="engine-pick">生成方式
+          <select value={project.engine} disabled={busy} onChange={(event) => onAction('set-engine', { engine: event.target.value })}>
+            <option value="local">本机生成（不消耗额度）</option>
+            <option value="cloud">云端成片（按镜消耗额度）</option>
+          </select>
+        </label>
+        <p>{pending.length} 个镜头 · 云端 {cloudPending} 镜将消耗 {cloudPending} 次额度 · 本机 {pending.length - cloudPending} 镜免费</p>
+        {expireHint && <p className="workflow-hint">{expireHint}</p>}
+        {quotaRemain !== null && cloudPending > quotaRemain && <p className="workflow-error">云端额度不足（剩余 {quotaRemain} 次，需要 {cloudPending} 次）；请把部分镜头改回本机，或等额度刷新。</p>}
         {project.briefStale && <p className="workflow-hint">待拍分镜基于旧版创作简报，已阻止开拍；请先返修分镜并重新确认。</p>}
         {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
-        <button className="workflow-primary" disabled={busy || !pending.length || project.briefStale} onClick={() => onAction('generate', cloud ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}>
-          <Play />{cloud ? `确认消耗 ${pending.length} 次并开拍` : '开始本机生成'}
+        <button className="workflow-primary" disabled={busy || !pending.length || project.briefStale} onClick={() => onAction('generate', cloudPending ? { shots: 'pending', confirmCloud: true, confirmedCount: cloudPending } : { shots: 'pending' })}>
+          <Play />{cloudPending ? `确认消耗 ${cloudPending} 次额度并开拍` : '开始本机生成'}
         </button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回调整分镜</button>
       </section>
@@ -795,7 +872,7 @@ function WorkflowPanel({ project, busy, onAction }: {
         <GenerationProgress shots={project.shots} />
         <p>{processing ? `${processing} 个任务正在处理` : failed ? `${failed} 个镜头生成失败` : pending.length ? `${pending.length} 个镜头等待继续生成` : '正在整理成片'}</p>
         {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
-        {pending.length > 0 && <button className="workflow-primary" disabled={busy} onClick={() => onAction('generate', project.engine === 'cloud' ? { shots: 'pending', confirmCloud: true, confirmedCount: pending.length } : { shots: 'pending' })}><RefreshCw />{failed ? '重试失败镜头' : '继续生成未完成镜头'}</button>}
+        {pending.length > 0 && <button className="workflow-primary" disabled={busy} onClick={() => onAction('generate', cloudPending ? { shots: 'pending', confirmCloud: true, confirmedCount: cloudPending } : { shots: 'pending' })}><RefreshCw />{failed ? '重试失败镜头' : '继续生成未完成镜头'}{cloudPending ? `（${cloudPending} 次额度）` : ''}</button>}
         {project.finalError && <p className="workflow-error">{project.finalError}</p>}
       </section>
     )
@@ -974,9 +1051,11 @@ function AssetsPage({ project, busy, onUse }: { project: Project; busy: boolean;
       <div className="asset-grid">
         {items.map((asset) => (
           <article key={asset.id} className="asset-card">
-            <img src={asset.url} alt={asset.title} />
+            {asset.type === 'video' ? <video src={asset.url} muted preload="metadata" controls /> : <img src={asset.url} alt={asset.title} />}
             <div><b>{asset.title}</b><small>{asset.projectTitle}</small></div>
-            <button disabled={busy || asset.projectId === project.id} onClick={() => onUse(asset)}>{asset.projectId === project.id ? <Check /> : <Plus />}{asset.projectId === project.id ? '已在项目中' : '用于当前项目'}</button>
+            {asset.type === 'video'
+              ? <span className="asset-video-tag">生成片段</span>
+              : <button disabled={busy || asset.projectId === project.id} onClick={() => onUse(asset)}>{asset.projectId === project.id ? <Check /> : <Plus />}{asset.projectId === project.id ? '已在项目中' : '用于当前项目'}</button>}
           </article>
         ))}
         {!items.length && !loadError && <div className="empty">还没有沉淀的参考素材</div>}
