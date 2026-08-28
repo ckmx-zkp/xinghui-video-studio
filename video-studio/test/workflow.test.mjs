@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList, storyboardMatchesBrief } from '../director.mjs'
+import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, detectStructuralRevision, extractJson, parseDirectorReply, resolveShotList, storyboardMatchesBrief } from '../director.mjs'
 
 // server.mjs reads its runtime modes at import time, so the demo switch must be
 // set before the dynamic import below. Director replies in tests therefore come
@@ -698,5 +698,51 @@ describe('engine switching and asset library', () => {
     assert.equal(denied.status, 401)
     const verified = await fetch(`${baseUrl}/api/auth/verify`, { headers: { Cookie: `kunpeng_studio=${cookie[1]}` } })
     assert.equal(verified.status, 200)
+  })
+
+  it('parses structural revision commands the director failed to act on', () => {
+    const full = detectStructuralRevision('删掉镜头2和3，只保留镜头1，重建为单个10秒镜头，引擎改为云端', { shots: [{}, {}, {}] })
+    assert.equal(full.shotCount, 1)
+    assert.equal(full.duration, 10)
+    assert.equal(full.engine, 'cloud')
+    assert.match(full.instruction, /删掉镜头2和3/)
+    const deletedOnly = detectStructuralRevision('删掉镜头2和3', { shots: [{}, {}, {}] })
+    assert.equal(deletedOnly.shotCount, 1)
+    assert.equal(deletedOnly.duration, undefined)
+    const engineOnly = detectStructuralRevision('使用云端接口重新出片', { shots: [] })
+    assert.equal(engineOnly.engine, 'cloud')
+    assert.equal(engineOnly.shotCount, undefined)
+    assert.equal(detectStructuralRevision('做一支温馨治愈的视频', { shots: [] }), null)
+  })
+
+  it('executes the structural revision when the director only narrates', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    fs.writeFileSync(file, JSON.stringify({
+      ...created,
+      phase: 'delivered',
+      deliveredAt: '2026-08-29T00:00:00.000Z',
+      finalUrl: '/media/final.mp4',
+      finalFilename: 'final.mp4',
+      duration: 18,
+      selectedConceptId: 'c1',
+      concepts: [{ id: 'c1', title: 'A', logline: 'l', narrative: 'n', visualHook: 'v', ending: 'e' }],
+      shots: [
+        { id: 'k1', index: 0, title: '镜一', description: 'd', video_prompt: 'p1', status: 'Success', filename: 'h3-a.mp4', duration: 6 },
+        { id: 'k2', index: 1, title: '镜二', description: 'd', video_prompt: 'p2', status: 'Success', filename: 'h3-b.mp4', duration: 6 },
+        { id: 'k3', index: 2, title: '镜三', description: 'd', video_prompt: 'p3', status: 'Success', filename: 'h3-c.mp4', duration: 6 },
+      ],
+    }, null, 2))
+    const reply = await fetch(`${baseUrl}/api/projects/${created.id}/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: '删掉镜头2和3，只保留镜头1，重建为单个10秒镜头，引擎改为云端' }),
+    })
+    assert.equal(reply.status, 200)
+    const project = await reply.json()
+    assert.equal(project.phase, 'storyboard_review')
+    assert.equal(project.shots.length, 1)
+    assert.equal(project.shots[0].duration, 10)
+    assert.equal(project.engine, 'cloud')
+    assert.equal((project.materialShots || []).length, 3)
   })
 })

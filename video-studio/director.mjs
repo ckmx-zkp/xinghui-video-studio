@@ -227,6 +227,46 @@ actions 可选：
 不要输出 create_storyboard、generate 或 merge。不要声称已经执行 actions 之外的操作。`
 }
 
+const CN_NUM = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+const readCnCount = (raw) => {
+  if (!raw) return null
+  if (/^[0-9]+$/.test(raw)) return Number(raw)
+  return CN_NUM[raw] ?? null
+}
+
+// Deterministic fallback for structural revision commands. When the director
+// only describes a plan, the server parses the command itself and runs the
+// revision — model narration must never substitute for the action.
+export function detectStructuralRevision(text, project) {
+  const t = String(text || '').trim()
+  if (!t) return null
+  const actionMatch = t.match(/(删掉|删除|去掉|只保留|只留|保留)\s*镜[头]?\s*([0-9一二三四五六七八九十]{1,3})(?:\s*[和、与]\s*([0-9一二三四五六七八九十]{1,3}))?/)
+  const wantsSingle = /单[镜个条]|单独|一镜到底|一段成片|就一[个段镜]/.test(t)
+  const recut = /重建|重切|重新切|合并为?一|合成一[镜段]|一镜到底/.test(t)
+  const durationMatch = t.match(/(\d{1,3})\s*秒/)
+  const duration = durationMatch && Number(durationMatch[1]) >= 5 && Number(durationMatch[1]) <= 60 ? Number(durationMatch[1]) : null
+  const engine = /引擎\s*改?为?\s*云端|用云端|云端接口|云端出片|云端生成|换云端/.test(t)
+    ? 'cloud'
+    : /引擎\s*改?为?\s*本机|用本机|本机出片|本机生成|换本机/.test(t) ? 'local' : null
+  let shotCount = null
+  if (wantsSingle) {
+    shotCount = 1
+  } else if (actionMatch) {
+    const numbers = [actionMatch[2], actionMatch[3]].filter(Boolean).map(readCnCount).filter((n) => n != null)
+    if (['删掉', '删除', '去掉'].includes(actionMatch[1])) shotCount = Math.max(1, (project?.shots?.length || 0) - numbers.length)
+    else shotCount = Math.max(1, numbers.length)
+  }
+  const structural = wantsSingle || actionMatch || recut || (duration != null && /镜|段|成片/.test(t))
+  if (!structural && !engine) return null
+  if (!structural) return { engine }
+  return {
+    instruction: t.slice(0, 2000),
+    ...(shotCount != null ? { shotCount } : {}),
+    ...(duration != null ? { duration } : {}),
+    ...(engine ? { engine } : {}),
+  }
+}
+
 export function extractJson(raw) {
   if (raw && typeof raw === 'object') return raw
   const cleaned = String(raw || '').replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```json|```/g, '').trim()

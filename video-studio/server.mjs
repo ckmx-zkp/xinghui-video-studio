@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore } from './projects.mjs'
-import { briefReadiness, completionText, dedupeDirectorChoices, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector, storyboardMatchesBrief, storyboardShotCount, storyboardShotDurations } from './director.mjs'
+import { briefReadiness, completionText, dedupeDirectorChoices, detectStructuralRevision, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector, storyboardMatchesBrief, storyboardShotCount, storyboardShotDurations } from './director.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -1864,6 +1864,22 @@ app.post('/api/projects/:id/chat', async (req, res) => {
 
     const history = historyForDirector(project.messages, attachmentFiles.map((filename) => store.imageDataUrl(project.id, filename)))
     const parsed = await completeDirectorTurn(project, history, { directStart })
+    // Deterministic execution guard: a structural command from the user must
+    // run even when the director only describes a plan without acting.
+    const reviseFallback = detectStructuralRevision(text, project)
+    if (reviseFallback && !directStart && ['storyboard_review', 'quality_review', 'ready_to_generate', 'delivery_review', 'delivered'].includes(project.phase)) {
+      const actions = Array.isArray(parsed.actions) ? parsed.actions : []
+      const hasRevise = actions.some((action) => (action.op || action.type) === 'revise_storyboard')
+      const hasEngine = actions.some((action) => (action.op || action.type) === 'update_brief' && action.engine)
+      if (!hasRevise && (reviseFallback.shotCount != null || reviseFallback.duration != null)) {
+        parsed.actions = [...actions, { op: 'revise_storyboard', ...reviseFallback }]
+      } else if (hasRevise && reviseFallback.engine) {
+        const revise = parsed.actions.find((action) => (action.op || action.type) === 'revise_storyboard')
+        if (!revise.engine) revise.engine = reviseFallback.engine
+      } else if (!hasEngine && reviseFallback.engine) {
+        parsed.actions = [...actions, { op: 'update_brief', engine: reviseFallback.engine }]
+      }
+    }
     const notes = []
     const artifactChanges = initialGoalAdded ? ['goal'] : []
     try {
