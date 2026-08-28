@@ -7,6 +7,7 @@ type Shot = {
   index: number
   duration?: number
   engine?: string
+  startedAt?: string
   title: string
   description: string
   video_prompt: string
@@ -1078,14 +1079,16 @@ function GenerationProgress({ shots }: { shots: Shot[] }) {
   const active = shots.find((shot) => shot.status === 'Processing')
   const waiting = shots.filter((shot) => shot.status === 'Queueing').length
   const detail = active?.generationProgress
+  const elapsedMin = active?.startedAt ? Math.max(0, Math.round((Date.now() - Date.parse(active.startedAt)) / 60000)) : null
   const exactShotPercent = detail?.exact && detail.max && detail.value !== undefined ? Math.round((detail.value / detail.max) * 100) : undefined
   const exactSteps = detail?.exact && detail.value !== undefined && detail.max ? `${detail.value}/${detail.max}` : ''
   const overallPercent = exactShotPercent === undefined ? Math.round((complete / total) * 100) : Math.round(((complete + exactShotPercent / 100) / total) * 100)
-  const currentText = active
+  const currentText = (active
     ? exactShotPercent === undefined
       ? `S${active.index + 1} · ${detail?.label || '正在连接 H3 工作流'}（阶段估算 ${detail?.min ?? 0}–${detail?.max ?? 99}%）`
       : `S${active.index + 1} · ${detail?.label || '采样生成视频帧'} · ${exactSteps} 步（精确 ${exactShotPercent}%）`
-    : waiting ? `${waiting} 镜正在排队` : complete === total ? '镜头已完成，正在合成成片' : '正在同步生成状态'
+    : waiting ? `${waiting} 镜正在排队` : complete === total ? '镜头已完成，正在合成成片' : '正在同步生成状态')
+    + (active && elapsedMin != null ? ` · 已运行 ${elapsedMin} 分钟（本机单镜一般 6-15 分钟，10 秒镜更久）` : '')
   return (
     <div className="generation-progress" aria-live="polite">
       <div className="generation-progress-head"><b>成片完成</b><span>{complete}/{shots.length} 镜 · {overallPercent}%</span></div>

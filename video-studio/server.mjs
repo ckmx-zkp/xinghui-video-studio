@@ -530,9 +530,17 @@ function liveProgressForShot(shot) {
 }
 
 function decorateProjectProgress(project) {
+  const tasks = readTasks()
   return {
     ...project,
-    shots: (project.shots || []).map((shot) => ({ ...shot, generationProgress: liveProgressForShot(shot) })),
+    shots: (project.shots || []).map((shot) => {
+      const task = tasks.find((item) => item.id === shot.taskId)
+      return {
+        ...shot,
+        startedAt: task?.createdAt || undefined,
+        generationProgress: liveProgressForShot(shot),
+      }
+    }),
   }
 }
 
