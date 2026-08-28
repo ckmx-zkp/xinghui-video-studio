@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { briefReadiness, buildProcessProgress, completionText, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
+import { briefReadiness, buildProcessProgress, completionText, dedupeDirectorChoices, extractJson, parseDirectorReply, resolveShotList } from '../director.mjs'
 import { app, applyDirectorDefaults, comfyStageForNode, historyForDirector, isAdvanceIntent, isDirectStartIntent, resolveRuntimeModes } from '../server.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -39,10 +39,10 @@ describe('director workflow contract', () => {
     tone: '先紧张后放松',
   }
 
-  it('keeps a short request in discovery for multiple turns', () => {
+  it('does not force extra interview turns after the brief is complete', () => {
     const result = briefReadiness({ idea: '做一个耳机广告', discoveryTurns: 1, creativeBrief: completeBrief })
-    assert.equal(result.ready, false)
-    assert.equal(result.turnsRemaining, 2)
+    assert.equal(result.ready, true)
+    assert.equal(result.turnsRemaining, 0)
   })
 
   it('allows review after discovery is complete', () => {
@@ -104,6 +104,15 @@ describe('director workflow contract', () => {
     assert.equal(parsed.choices[1].reply, '选择视觉隐喻方向')
   })
 
+  it('removes repeated or near-identical director choices', () => {
+    const previous = [{ label: '现实通勤', description: '用地铁噪声建立真实共鸣' }]
+    const choices = dedupeDirectorChoices([
+      { label: '真实通勤', description: '从地铁噪声切入建立现实共鸣', reply: '选择真实通勤' },
+      { label: '抽象静音世界', description: '用视觉隐喻突出降噪', reply: '选择抽象静音世界' },
+    ], previous)
+    assert.deepEqual(choices.map((item) => item.label), ['抽象静音世界'])
+  })
+
   it('repairs common near-JSON output from the director model', () => {
     const parsed = extractJson('{"say":"继续","insight":"画面成立","choices":[{"label":"方向A","reply":"选择A"},{"label":"方向B","reply":"选择B"}],')
     assert.equal(parsed.say, '继续')
@@ -163,6 +172,7 @@ describe('natural-language planning confirmations', () => {
   it('treats direct start as a distinct instruction and fills safe planning defaults', () => {
     assert.equal(isDirectStartIntent('直接开始制作视频！'), true)
     assert.equal(isDirectStartIntent('继续'), false)
+    assert.equal(isDirectStartIntent('现在不要开拍'), false)
     const project = { idea: '小狗坐推车兜风', creativeBrief: { goal: '小狗坐推车兜风' } }
     applyDirectorDefaults(project)
     for (const key of ['goal', 'audience', 'story', 'subject', 'visualStyle', 'tone']) assert.ok(project.creativeBrief[key])
@@ -223,5 +233,31 @@ describe('server phase gates', () => {
     assert.equal(response.status, 409)
     const body = await response.json()
     assert.match(body.error, /确认创作简报和分镜/)
+  })
+
+  it('prepares a delivered project for a second shoot without deleting source assets', async () => {
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST' }).then((response) => response.json())
+    createdProjects.push(created.id)
+    const file = path.join(root, 'outputs', 'projects', created.id, 'project.json')
+    const delivered = {
+      ...created,
+      phase: 'delivered',
+      deliveredAt: '2026-08-28T00:00:00.000Z',
+      finalUrl: '/media/final.mp4',
+      finalFilename: 'final.mp4',
+      shots: [{ id: 'shot-1', index: 0, title: '开场', description: '主体入场', video_prompt: '可执行提示词', status: 'Success', taskId: 'task-1', filename: 'shot-1.mp4', imageFile: 'reference.png' }],
+    }
+    fs.writeFileSync(file, JSON.stringify(delivered, null, 2))
+
+    const response = await fetch(`${baseUrl}/api/projects/${created.id}/prepare-reshoot`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    const project = await response.json()
+    assert.equal(project.phase, 'ready_to_generate')
+    assert.equal(project.previousRenders.length, 1)
+    assert.equal(project.shots[0].status, 'ready')
+    assert.equal(project.shots[0].imageFile, 'reference.png')
+    assert.equal(project.shots[0].taskId, undefined)
+    assert.equal(project.shots[0].filename, undefined)
+    assert.equal(project.finalUrl, '')
   })
 })

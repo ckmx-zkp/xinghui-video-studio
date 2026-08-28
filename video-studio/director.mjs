@@ -12,10 +12,7 @@ const BRIEF_LABELS = {
 export function briefReadiness(project) {
   const brief = project.creativeBrief || {}
   const missing = Object.entries(BRIEF_LABELS).filter(([key]) => !String(brief[key] || '').trim()).map(([, label]) => label)
-  const detailedRequest = String(project.idea || '').trim().length >= 120
-  const minimumTurns = detailedRequest ? 1 : 3
-  const turnsRemaining = Math.max(0, minimumTurns - Number(project.discoveryTurns || 0))
-  return { ready: missing.length === 0 && turnsRemaining === 0, missing, turnsRemaining, minimumTurns }
+  return { ready: missing.length === 0, missing, turnsRemaining: 0, minimumTurns: 0 }
 }
 
 const PHASE_ORDER = ['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate', 'generating', 'delivery_review', 'delivered']
@@ -49,7 +46,6 @@ export function buildProcessProgress(project) {
   const readiness = briefReadiness(project)
   const required = Object.keys(BRIEF_LABELS)
   const filled = required.filter((key) => String(brief[key] || '').trim()).length
-  const turnsDone = Math.min(Number(project.discoveryTurns || 0), readiness.minimumTurns)
   const concepts = Array.isArray(project.concepts) ? project.concepts : []
   const selected = concepts.find((item) => item.id === project.selectedConceptId)
   const shots = Array.isArray(project.shots) ? project.shots : []
@@ -59,11 +55,10 @@ export function buildProcessProgress(project) {
 
   const discoveryDone = pastPhase(phase, 'discovery') || readiness.ready
   const discovery = {
-    completeness: discoveryDone ? 100 : clampScore((filled / required.length) * 70 + (readiness.minimumTurns ? (turnsDone / readiness.minimumTurns) * 30 : 30)),
+    completeness: discoveryDone ? 100 : clampScore((filled / required.length) * 100),
     quality: clampScore(average(required.map((key) => richness(brief[key]))) + ((project.referenceImages || []).length ? 8 : 0)),
     missing: [
       ...readiness.missing,
-      readiness.turnsRemaining ? `还需 ${readiness.turnsRemaining} 轮交流` : '',
     ].filter(Boolean),
   }
 
@@ -169,18 +164,19 @@ export function directorSystemFor(project) {
 各过程：${progressLine}
 简报是否可以送审：${readiness.ready ? '可以' : '不可以'}
 仍缺信息：${readiness.missing.join('、') || '无'}
-还需完成的发现对话轮数：${readiness.turnsRemaining}
+已经形成的简报修订：${JSON.stringify((project.briefRevisions || []).slice(-6).map((item) => ({ fields: item.fields, insight: item.insight })))}
+最近给过的选项：${JSON.stringify((project.messages || []).filter((item) => item.role === 'assistant' && item.choices?.length).slice(-4).flatMap((item) => item.choices).map(({ label, description }) => ({ label, description })))}
 
 通用规则：
-1. 根据整段对话理解意图，每轮最多问一个最有价值、容易回答的问题。不要一次发问卷；信息已经足够时不要为了“多问一轮”而追问。
-2. 先用一两句话回应用户刚才的选择，再自然地提出下一问。
+1. 根据整段对话理解意图，每轮最多问一个尚未决定、会实质改变成片的问题。不得重复询问简报里已有答案的事项；信息足够时立即送审，不得为了轮数追问。
+2. 先明确说明本轮已经形成或更新了什么创作结论，再提出下一问。discovery 阶段每轮都必须用 update_brief 写入本轮新增或修正的产物字段；若用户没有提供新事实，采用有依据的专业默认值补齐最关键缺口。
 3. 当前消息包含参考图时，必须结合实际图像内容回答：先指出观察到的主体、环境、构图或风格事实，再说明这些事实对创作的影响。不要假装看到了不存在的内容，并区分观察与推断。
 4. 用户允许你决定某项时，可以给出专业建议并把决定写入简报；不适用的字段写清楚“不适用”及原因。
 5. update_brief 只更新本轮真正新增或改变的字段。用户选择风格、节奏或叙事选项时，不得把该选项文字覆盖为创作目标 goal。
 6. 不得在聊天中直接开拍。视频生成只能由用户在分镜确认后点击独立按钮触发。
-7. 仅在仍需创作决策时给 2-4 个真正有差异的选择；简报已经完整、用户说“直接做/开始/继续”或用户允许你决定时，给出专业默认方案并结束本轮，不要继续问声音、BGM、配音、口型等非必要项。首版默认不承诺对口型、配音或 BGM，除非这些能力已被项目明确接通。
+7. 仅在仍需创作决策时给 2-4 个真正有差异的选择。不得复用最近给过的选项，也不得用近义改写伪装成新选择；各选项必须改变故事、受众、视觉语言、节奏、声音或执行策略中的至少一项。简报已经完整、用户说“直接做/开始/继续”或用户允许你决定时，给出专业默认方案并结束本轮，不要继续问声音、BGM、配音、口型等非必要项。
 8. 只输出一个 JSON 对象，不要 markdown：{"say":"给用户的中文回复","insight":"你基于当前信息作出的专业判断及理由","choices":[{"label":"选项短标题","description":"选择后的创作影响","reply":"用户选择此项时送回导演的完整回答"}],"actions":[]}
-9. 用户明确说“直接开始/直接制作/立即开始/开拍”时，这是授权你采用专业默认值的指令：本轮必须用 update_brief 补全或更新全部相关简报字段，不得提问，choices 为空。服务端会继续完成分镜与本机开拍。
+9. 用户明确说“直接开始/直接制作/立即开始/开拍”时，这是授权你采用专业默认值的指令：本轮必须用 update_brief 补全全部相关简报字段，不得提问，choices 为空。服务端只会把产物送到下一道明确的 UI 审核门，不会在聊天中生成视频。
 10. 完整度满只表示这一关可以往下走，不表示对话结束。任何阶段用户继续补充、改方向、改分镜时，必须吸收修改（update_brief / rewrite_shot / regenerate_concepts），并明确告诉用户“已经完整，仍可继续改”。不要因为某关已完整而拒绝交流或强迫进入下一关。
 
 阶段规则：
@@ -246,6 +242,7 @@ export function snapshotForDirector(project) {
     concepts: (project.concepts || []).map((item) => ({ id: item.id, title: item.title, logline: item.logline })),
     selectedConceptId: project.selectedConceptId || '',
     productionPlan: project.productionPlan || [],
+    briefRevisions: (project.briefRevisions || []).slice(-6),
     qualityReview: project.qualityReview || null,
     referenceImageCount: (project.referenceImages || []).length,
     finalUrl: project.finalUrl || '',
@@ -274,6 +271,38 @@ export function parseDirectorReply(raw) {
     reply: String(item?.reply || item?.label || '').trim().slice(0, 500),
   })).filter((item) => item.label && item.reply)
   return { say: say || '我先根据你的话继续往下做。', insight, choices, actions }
+}
+
+const choiceText = (choice) => `${choice?.label || ''}${choice?.description || ''}`.toLowerCase().replace(/[\s，。！？、,.!?:：;；“”'"（）()\-_]/g, '')
+const bigrams = (value) => {
+  if (value.length < 2) return new Set(value ? [value] : [])
+  return new Set(Array.from({ length: value.length - 1 }, (_, index) => value.slice(index, index + 2)))
+}
+const choiceSimilarity = (left, right) => {
+  const leftText = choiceText(left)
+  const rightText = choiceText(right)
+  const a = bigrams(leftText)
+  const b = bigrams(rightText)
+  const leftChars = new Set(leftText)
+  const rightChars = new Set(rightText)
+  if (!a.size || !b.size || !leftChars.size || !rightChars.size) return 0
+  let sharedBigrams = 0
+  let sharedChars = 0
+  for (const item of a) if (b.has(item)) sharedBigrams += 1
+  for (const item of leftChars) if (rightChars.has(item)) sharedChars += 1
+  return Math.max(
+    sharedBigrams / Math.min(a.size, b.size),
+    sharedChars / Math.min(leftChars.size, rightChars.size),
+  )
+}
+
+export function dedupeDirectorChoices(choices, previousChoices = []) {
+  const kept = []
+  for (const choice of choices || []) {
+    if ([...previousChoices, ...kept].some((previous) => choiceSimilarity(choice, previous) >= 0.72)) continue
+    kept.push(choice)
+  }
+  return kept.slice(0, 4)
 }
 
 export function resolveShotList(spec, project) {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, ChevronRight, CircleAlert, ClipboardCheck, Cloud, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Play, Plus, RefreshCw, Send, Settings, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, CircleAlert, ClipboardCheck, Cloud, FileText, Film, FolderOpen, History, ImagePlus, Lightbulb, LoaderCircle, Palette, Play, Plus, RefreshCw, RotateCcw, Send, Settings, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react'
 import './App.css'
 
 type Shot = {
@@ -47,6 +47,8 @@ type Concept = {
   ending: string
 }
 type ProductionTask = { id: string; index: number; title: string; purpose: string; deliverable: string; owner: string }
+type BriefRevision = { id: string; fields: string[]; insight?: string; createdAt: string }
+type PreviousRender = { id: string; url: string; filename: string; deliveredAt: string }
 type QualityReview = {
   score: number
   verdict: 'pass' | 'revise'
@@ -85,6 +87,8 @@ type Project = {
   creativeBrief: CreativeBrief
   concepts: Concept[]
   productionPlan: ProductionTask[]
+  briefRevisions: BriefRevision[]
+  previousRenders: PreviousRender[]
   referenceImages: string[]
   qualityReview?: QualityReview | null
   processProgress?: ProcessProgress
@@ -325,6 +329,7 @@ function App() {
           <main className="workspace chat-workspace">
             <div className="chat-log" ref={logRef}>
               {project?.processProgress && <ProcessStrip progress={project.processProgress} />}
+              {project && <div className="mobile-artifacts"><CreativeArtifacts project={project} compact /></div>}
               {messages.length === 0 && (
                 <>
                   <div className="bubble assistant">这次想做一支什么样的视频？先说一个大致想法，我会和你一起把故事、受众与画面方向梳理清楚。</div>
@@ -415,6 +420,7 @@ function App() {
                 </span>
               )}
             </div>
+            {project && <CreativeArtifacts project={project} />}
             {project?.processProgress && <ProcessBoard progress={project.processProgress} />}
             {project && <WorkflowPanel project={project} busy={busy} onAction={runProjectAction} />}
             {project && project.productionPlan.length > 0 && <ProductionCanvas project={project} />}
@@ -447,17 +453,72 @@ function App() {
   )
 }
 
-const briefRows: Array<[keyof CreativeBrief, string]> = [
-  ['goal', '创作目标'],
-  ['audience', '目标受众'],
-  ['platform', '发布平台'],
-  ['story', '故事主线'],
-  ['subject', '主体角色'],
-  ['visualStyle', '视觉风格'],
-  ['tone', '情绪基调'],
-  ['audio', '声音设计'],
-  ['constraints', '边界要求'],
+const artifactFieldLabels: Record<string, string> = {
+  title: '项目标题', goal: '创作目标', audience: '目标受众', platform: '发布平台', story: '故事主线', subject: '主体角色',
+  visualStyle: '视觉风格', tone: '情绪基调', audio: '声音设计', constraints: '制作边界', referenceNotes: '参考素材',
+  aspect: '画幅', duration: '时长', engine: '生成方式', skill: '创作方法',
+}
+
+const artifactSections = [
+  { id: 'positioning', title: '项目定位', icon: Users, fields: ['goal', 'audience', 'platform'] },
+  { id: 'narrative', title: '叙事方案', icon: FileText, fields: ['story', 'subject', 'tone'] },
+  { id: 'language', title: '视觉与声音', icon: Palette, fields: ['visualStyle', 'audio', 'referenceNotes'] },
+  { id: 'execution', title: '制作约束', icon: SlidersHorizontal, fields: ['aspect', 'duration', 'engine', 'skill', 'constraints'] },
 ]
+
+function artifactValue(project: Project, field: string) {
+  if (field === 'aspect') return project.aspect
+  if (field === 'duration') return `${project.duration} 秒`
+  if (field === 'engine') return project.engine === 'cloud' ? '云端成片' : '本机生成'
+  if (field === 'skill') return skillLabel[project.skill] || '自定义流程'
+  return project.creativeBrief?.[field as keyof CreativeBrief] || ''
+}
+
+function CreativeArtifacts({ project, compact = false }: { project: Project; compact?: boolean }) {
+  const recent = (project.briefRevisions || []).slice(-3).reverse()
+  const changed = new Set(recent[0]?.fields || [])
+  const filled = artifactSections.flatMap((section) => section.fields).filter((field) => artifactValue(project, field)).length
+  const total = artifactSections.flatMap((section) => section.fields).length
+  const compactFields = recent[0]?.fields?.length
+    ? recent[0].fields.slice(0, 4)
+    : artifactSections.flatMap((section) => section.fields).filter((field) => artifactValue(project, field)).slice(0, 3)
+  if (compact) {
+    return (
+      <section className="artifact-canvas compact" aria-label="本轮创作产物">
+        <div className="workflow-title"><Sparkles />{recent[0] ? '本轮形成' : '当前创作产物'} <span>{filled}/{total}</span></div>
+        <dl>
+          {compactFields.map((field) => <div key={field}><dt>{artifactFieldLabels[field] || field}</dt><dd>{artifactValue(project, field) || '待确认'}</dd></div>)}
+        </dl>
+      </section>
+    )
+  }
+  return (
+    <section className="artifact-canvas" aria-label="持续创作产物">
+      <div className="workflow-title"><Sparkles />持续创作画布 <span>{filled}/{total} 项已形成</span></div>
+      <p>每轮对话确认的内容会立即写入这些生产文档，后续创意与分镜直接引用。</p>
+      <div className="artifact-sections">
+        {artifactSections.map((section) => {
+          const Icon = section.icon
+          return (
+            <article key={section.id}>
+              <header><Icon /><b>{section.title}</b></header>
+              <dl>
+                {section.fields.map((field) => {
+                  const value = artifactValue(project, field)
+                  return <div key={field} className={changed.has(field) ? 'updated' : value ? 'filled' : 'empty'}><dt>{artifactFieldLabels[field]}</dt><dd>{value || '待确认'}</dd>{changed.has(field) && <em>本轮更新</em>}</div>
+                })}
+              </dl>
+            </article>
+          )
+        })}
+      </div>
+      {recent.length > 0 && <div className="artifact-revisions">
+        <b>最近形成</b>
+        {recent.map((revision) => <div key={revision.id}><span>{revision.fields.map((field) => artifactFieldLabels[field] || field).join(' · ')}</span>{revision.insight && <small>{revision.insight}</small>}</div>)}
+      </div>}
+    </section>
+  )
+}
 
 function ProcessStrip({ progress }: { progress: ProcessProgress }) {
   const current = progress.steps.find((item) => item.current) || progress.steps[0]
@@ -527,16 +588,9 @@ function WorkflowPanel({ project, busy, onAction }: {
   if (project.phase === 'brief_review') {
     return (
       <section className="workflow-panel">
-        <div className="workflow-title"><Check />创作简报</div>
-        <dl className="brief-grid">
-          {briefRows.filter(([key]) => project.creativeBrief?.[key]).map(([key, label]) => (
-            <div key={key}><dt>{label}</dt><dd>{project.creativeBrief[key]}</dd></div>
-          ))}
-          <div><dt>创作方法</dt><dd>{skillLabel[project.skill] || '自定义流程'}</dd></div>
-          <div><dt>成片规格</dt><dd>{project.aspect} · {project.duration} 秒 · {project.engine === 'cloud' ? '云端成片' : '本机草稿'}</dd></div>
-        </dl>
-        <p className="workflow-hint">也可以在聊天框直接说“确认”或“继续”。</p>
-        <button className="workflow-primary" disabled={busy} onClick={() => onAction('confirm-brief')}><Lightbulb />确认并继续</button>
+        <div className="workflow-title"><Check />简报审核门</div>
+        <p>上方四份创作产物已经形成。确认后会以它们为唯一依据生成多个差异明确的创意方向。</p>
+        <button className="workflow-primary" disabled={busy} onClick={() => onAction('confirm-brief')}><Lightbulb />确认简报，生成创意方向</button>
       </section>
     )
   }
@@ -560,7 +614,6 @@ function WorkflowPanel({ project, busy, onAction }: {
           <button disabled={busy} onClick={() => onAction('revise-brief')}><ArrowLeft />修改简报</button>
           <button disabled={busy} onClick={() => onAction('regenerate-concepts')}><RefreshCw />换一组</button>
         </div>
-        <p className="workflow-hint">想少做选择？在聊天框说“继续”，将自动采用推荐方向。</p>
       </section>
     )
   }
@@ -623,6 +676,7 @@ function WorkflowPanel({ project, busy, onAction }: {
         {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
         <button className="workflow-primary" disabled={busy} onClick={() => onAction('approve-delivery')}><Check />确认交付</button>
         <button className="workflow-secondary" disabled={busy} onClick={() => onAction('revise-storyboard')}><ArrowLeft />返回修改</button>
+        <button className="workflow-secondary" disabled={busy} onClick={() => onAction('prepare-reshoot')}><RotateCcw />基于当前分镜重新开拍</button>
       </section>
     )
   }
@@ -632,6 +686,8 @@ function WorkflowPanel({ project, busy, onAction }: {
       <div className="workflow-title"><Check />项目已完成</div>
       <p>{project.title}</p>
       {project.qualityReview && <QualityReviewCard review={project.qualityReview} compact />}
+      {project.previousRenders.length > 0 && <p className="workflow-hint">已保留 {project.previousRenders.length} 个历史成片版本</p>}
+      <button className="workflow-primary" disabled={busy} onClick={() => onAction('prepare-reshoot')}><RotateCcw />基于当前分镜重新开拍</button>
     </section>
   )
 }

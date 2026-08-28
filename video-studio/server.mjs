@@ -8,7 +8,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore } from './projects.mjs'
-import { briefReadiness, completionText, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
+import { briefReadiness, completionText, dedupeDirectorChoices, directorSystemFor, extractJson, parseDirectorReply, resolveShotList, snapshotForDirector } from './director.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -57,6 +57,7 @@ export function isAdvanceIntent(value) {
 
 export function isDirectStartIntent(value) {
   const text = String(value || '').trim().replace(/[，。！？、,.!？\s]+/g, '')
+  if (/(?:不要|不能|暂不|先不|别|不想).*?(?:开拍|开始制作|开始生成)$/u.test(text)) return false
   return /(?:直接开始(?:制作|生成)?(?:视频)?|直接制作(?:视频)?|直接做(?:视频)?|立即开始(?:制作|生成)?|现在开始(?:制作|生成)?|开拍)$/u.test(text)
 }
 
@@ -78,16 +79,37 @@ function projectOr404(id) {
 function applyBriefPatch(project, action) {
   const patch = action.brief && typeof action.brief === 'object' ? action.brief : {}
   project.creativeBrief = project.creativeBrief || {}
+  const changed = []
   for (const key of BRIEF_KEYS) {
-    if (typeof patch[key] === 'string' && patch[key].trim()) project.creativeBrief[key] = patch[key].trim().slice(0, 2000)
+    if (typeof patch[key] !== 'string' || !patch[key].trim()) continue
+    const value = patch[key].trim().slice(0, 2000)
+    if (project.creativeBrief[key] !== value) changed.push(key)
+    project.creativeBrief[key] = value
   }
-  if (typeof action.title === 'string' && action.title.trim()) project.title = action.title.trim().slice(0, 120)
-  if (['16:9', '9:16', '1:1'].includes(action.aspect)) project.aspect = action.aspect
+  if (typeof action.title === 'string' && action.title.trim()) {
+    const value = action.title.trim().slice(0, 120)
+    if (project.title !== value) changed.push('title')
+    project.title = value
+  }
+  if (['16:9', '9:16', '1:1'].includes(action.aspect)) {
+    if (project.aspect !== action.aspect) changed.push('aspect')
+    project.aspect = action.aspect
+  }
   const duration = Number(action.duration)
-  if (duration >= 6 && duration <= 60 && duration % 6 === 0) project.duration = duration
-  if (['local', 'cloud'].includes(action.engine)) project.engine = action.engine
-  if (SKILLS.has(action.skill)) project.skill = action.skill
+  if (duration >= 6 && duration <= 60 && duration % 6 === 0) {
+    if (project.duration !== duration) changed.push('duration')
+    project.duration = duration
+  }
+  if (['local', 'cloud'].includes(action.engine)) {
+    if (project.engine !== action.engine) changed.push('engine')
+    project.engine = action.engine
+  }
+  if (SKILLS.has(action.skill)) {
+    if (project.skill !== action.skill) changed.push('skill')
+    project.skill = action.skill
+  }
   if (project.creativeBrief.goal) project.idea = project.creativeBrief.goal
+  return changed
 }
 
 function normalizeChoices(values) {
@@ -787,20 +809,20 @@ async function refreshProject(project) {
   return decorateProjectProgress(project)
 }
 
-async function applyActions(project, actions, notes) {
+async function applyActions(project, actions, notes, artifactChanges = []) {
   for (const action of actions || []) {
     const op = action.op || action.type
     if (op === 'update_brief') {
       if (['generating', 'delivery_review', 'delivered'].includes(project.phase)) {
         notes.push('成片已经在进行或完成，简报改动已记下，但不会打断当前出片')
-        applyBriefPatch(project, action)
+        artifactChanges.push(...applyBriefPatch(project, action))
         continue
       }
       if (!['discovery', 'brief_review', 'concept_selection', 'storyboard_review', 'quality_review', 'ready_to_generate'].includes(project.phase)) {
         notes.push('当前阶段不能修改创作简报')
         continue
       }
-      applyBriefPatch(project, action)
+      artifactChanges.push(...applyBriefPatch(project, action))
       notes.push('已记下简报修改。这一关即使完整，也还可以继续对话调整')
     } else if (op === 'present_brief') {
       if (project.phase !== 'discovery') continue
@@ -853,35 +875,6 @@ async function confirmBriefProject(project) {
   return project
 }
 
-async function advancePlanningFromChat(project) {
-  if (project.phase === 'brief_review') {
-    await confirmBriefProject(project)
-    return '已确认简报，并生成了 3 个创意方向。你可以直接说“继续”，我会采用推荐方向并生成分镜；也可以在右侧挑一个方向。'
-  }
-  if (project.phase === 'concept_selection') {
-    const recommended = project.concepts?.[0]
-    if (!recommended) throw new Error('暂时没有可选的创意方向')
-    project.selectedConceptId = recommended.id
-    await makeStoryboard(project)
-    project.phase = 'storyboard_review'
-    project.storyboardConfirmedAt = ''
-    return `已采用推荐方向「${recommended.title}」并生成分镜。你可以直接说“继续”进入质量检查，或在右侧调整方向。`
-  }
-  if (project.phase === 'storyboard_review') {
-    if (!project.shots?.length) throw new Error('还没有可确认的分镜')
-    await reviewStoryboard(project)
-    project.phase = 'quality_review'
-    project.storyboardConfirmedAt = new Date().toISOString()
-    return '分镜已确认，正在展示质量检查结果。检查通过后，你再说“继续”即可准备开拍。'
-  }
-  if (project.phase === 'quality_review') {
-    if (project.qualityReview?.verdict !== 'pass') return '质量检查建议先修改分镜；我没有替你跳过这一步。你可以说“修改第几镜 + 怎么改”。'
-    project.phase = 'ready_to_generate'
-    return '质量检查已通过，已准备开拍。请点击右侧“开始本机生成”；云端项目会先明确显示将消耗的额度。'
-  }
-  return ''
-}
-
 export function applyDirectorDefaults(project) {
   project.creativeBrief = project.creativeBrief || {}
   const brief = project.creativeBrief
@@ -897,49 +890,52 @@ export function applyDirectorDefaults(project) {
     audio: '首版以画面和环境氛围为主；未接通的配音、BGM、对口型不阻塞生成。',
     constraints: '未指定项由导演按可执行性、主体一致性和短视频节奏自动决定。',
   }
-  for (const [key, value] of Object.entries(defaults)) {
-    if (!String(brief[key] || '').trim()) brief[key] = value
-  }
-  project.idea = brief.goal
-  return project
+  const missing = Object.fromEntries(Object.entries(defaults).filter(([key]) => !String(brief[key] || '').trim()))
+  return applyBriefPatch(project, { brief: missing })
 }
 
-async function startLocalProject(project) {
-  const targets = resolveShotList('pending', project)
-  if (!targets.length) throw new Error('没有需要生成的镜头')
-  project.phase = 'generating'
-  for (const shot of targets) {
-    await startLocalShot(project, shot)
-    store.save(project)
+function directStartFromChat(project) {
+  const changed = applyDirectorDefaults(project)
+  if (project.phase === 'discovery' && briefReadiness(project).ready) project.phase = 'brief_review'
+  if (['delivery_review', 'delivered'].includes(project.phase)) {
+    return { say: '这个项目已有成片。请在右侧点击“基于当前分镜重新开拍”，我会保留现有素材和分镜并建立新版本。', changed }
   }
-  return targets.length
+  const guidance = {
+    brief_review: '默认创作方案已经补齐并显示在右侧，请确认简报后生成创意方向。',
+    concept_selection: '创意方向已经在右侧，请选择一个方向后继续。',
+    storyboard_review: '分镜已经在右侧，请确认分镜后进入质量审核。',
+    quality_review: '质量检查已经在右侧，请明确通过后进入开拍确认。',
+    ready_to_generate: '项目已经准备好，请点击右侧开拍按钮；云端会明确显示本次额度。',
+    generating: '项目正在生成，不会重复提交任务。请在右侧查看进度。',
+  }
+  return { say: guidance[project.phase] || '创作产物已更新在右侧，请从当前审核节点继续。', changed }
 }
 
-async function directStartFromChat(project) {
-  applyDirectorDefaults(project)
-  if (project.phase === 'discovery') project.phase = 'brief_review'
-  if (project.phase === 'brief_review') await confirmBriefProject(project)
-  if (project.phase === 'concept_selection') {
-    const recommended = project.concepts?.[0]
-    if (!recommended) throw new Error('导演未能生成可执行的创意方向')
-    project.selectedConceptId = recommended.id
-    await makeStoryboard(project)
-    project.phase = 'storyboard_review'
+function currentGateGuidance(project) {
+  const guidance = {
+    brief_review: '创作简报已经在右侧，请点击“确认简报”进入创意方向。',
+    concept_selection: '请在右侧选择一个创意方向；每个方向都会改变叙事或视觉执行。',
+    storyboard_review: '分镜已经在右侧，请审阅后点击“确认分镜”。',
+    quality_review: '质量审核结果已经在右侧，请明确通过或返回修改。',
+    ready_to_generate: '项目已经准备好，请点击右侧开拍按钮。',
+    generating: '项目正在生成，不会重复提交任务。',
+    delivery_review: '成片正在等待交付确认；如需重拍，请点击右侧“基于当前分镜重新开拍”。',
+    delivered: '项目已经交付；如需新版本，请点击右侧“基于当前分镜重新开拍”。',
   }
-  if (project.phase === 'storyboard_review') {
-    if (!project.shots?.length) throw new Error('导演未能生成可执行的分镜')
-    await reviewStoryboard(project)
-    project.storyboardConfirmedAt = new Date().toISOString()
-    project.phase = 'quality_review'
-  }
-  if (project.phase === 'quality_review') project.phase = 'ready_to_generate'
-  if (project.phase !== 'ready_to_generate') throw new Error('项目当前不能直接开拍')
-  if (project.engine === 'cloud') {
-    const count = resolveShotList('pending', project).length
-    return `导演已自动完成简报、分镜和检查。云端生成将消耗 ${count} 次额度，请点击右侧按钮确认后开拍。`
-  }
-  const count = await startLocalProject(project)
-  return `导演已自动补齐简报、创意与分镜，并已提交 ${count} 个本机镜头开始生成。你可以在右侧查看进度。`
+  return guidance[project.phase] || '请继续补充创作目标，我会把新增结论同步到右侧画布。'
+}
+
+function recordBriefRevision(project, fields, insight) {
+  const unique = [...new Set(fields)].filter(Boolean)
+  if (!unique.length) return
+  project.briefRevisions = project.briefRevisions || []
+  project.briefRevisions.push({
+    id: crypto.randomUUID(),
+    fields: unique,
+    insight: String(insight || '').trim().slice(0, 500),
+    createdAt: new Date().toISOString(),
+  })
+  project.briefRevisions = project.briefRevisions.slice(-30)
 }
 
 async function reviewStoryboard(project) {
@@ -1165,6 +1161,38 @@ app.post('/api/projects/:id/approve-delivery', (req, res) => {
   } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
 })
 
+app.post('/api/projects/:id/prepare-reshoot', (req, res) => {
+  try {
+    const project = projectOr404(req.params.id)
+    if (!['delivery_review', 'delivered'].includes(project.phase)) return res.status(409).json({ error: '当前项目还没有可重拍的成片版本' })
+    if (!project.shots?.length) return res.status(409).json({ error: '当前项目没有可复用的分镜' })
+    if (project.finalUrl || project.finalFilename) {
+      project.previousRenders = project.previousRenders || []
+      project.previousRenders.push({
+        id: crypto.randomUUID(),
+        url: project.finalUrl || '',
+        filename: project.finalFilename || '',
+        deliveredAt: project.deliveredAt || new Date().toISOString(),
+      })
+    }
+    project.shots = project.shots.map((shot) => {
+      const source = { ...shot }
+      delete source.taskId
+      delete source.filename
+      delete source.error
+      delete source.generationProgress
+      return { ...source, status: 'ready' }
+    })
+    project.phase = 'ready_to_generate'
+    project.finalUrl = ''
+    project.finalFilename = ''
+    project.finalError = ''
+    project.deliveredAt = ''
+    store.save(project)
+    res.json(project)
+  } catch (error) { res.status(error.status || 400).json({ error: error.message }) }
+})
+
 app.post('/api/projects/:id/generate', async (req, res) => {
   try {
     const project = projectOr404(req.params.id)
@@ -1287,9 +1315,11 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       ts: new Date().toISOString(),
     })
     if (project.phase === 'discovery' && text) project.discoveryTurns = Number(project.discoveryTurns || 0) + 1
+    let initialGoalAdded = false
     if (!project.idea && text) {
       project.idea = text
       project.creativeBrief.goal = text
+      initialGoalAdded = true
     }
     store.save(project)
     userTurnPersisted = true
@@ -1299,36 +1329,35 @@ app.post('/api/projects/:id/chat', async (req, res) => {
     // model. It is a command for the current planning gate, not new creative
     // input. This also makes “好/继续/开始制作” usable on mobile.
     if (isShortAdvanceIntent(text) && project.phase !== 'discovery') {
-      const say = directStart
-        ? await directStartFromChat(project)
-        : await advancePlanningFromChat(project)
-      if (say) {
-        project.messages.push({ role: 'assistant', content: say, insight: '', choices: [], ts: new Date().toISOString() })
-        store.save(project)
-        userTurnPersisted = false
-        return res.json(project)
-      }
+      const result = directStart ? directStartFromChat(project) : { say: currentGateGuidance(project), changed: [] }
+      recordBriefRevision(project, result.changed, directStart ? '用户授权导演采用专业默认值，已补齐缺失的制作决定。' : '')
+      project.messages.push({ role: 'assistant', content: result.say, insight: '', choices: [], ts: new Date().toISOString() })
+      store.save(project)
+      userTurnPersisted = false
+      return res.json(project)
     }
 
     const history = historyForDirector(project.messages, attachmentFiles.map((filename) => store.imageDataUrl(project.id, filename)))
     const parsed = await completeDirectorTurn(project, history)
     const notes = []
+    const artifactChanges = initialGoalAdded ? ['goal'] : []
     try {
-      await applyActions(project, parsed.actions, notes)
+      await applyActions(project, parsed.actions, notes, artifactChanges)
     } catch (actionError) {
       notes.push(actionError.message)
     }
     let reply = [parsed.say, notes.length ? notes.join('。') + '。' : ''].filter(Boolean).join('\n')
-    // A detailed message can both revise the brief and say “直接开始”. Let the
-    // director first apply the factual revision, then advance exactly one gate.
+    // A detailed direct-start message may still contain useful factual changes.
+    // Persist those changes, then stop at the current explicit UI review gate.
     if (directStart) {
-      const advanced = await directStartFromChat(project)
-      if (advanced) reply = advanced
-    } else if (isAdvanceIntent(text) && project.phase === 'brief_review') {
-      const advanced = await advancePlanningFromChat(project)
-      if (advanced) reply = advanced
+      const result = directStartFromChat(project)
+      artifactChanges.push(...result.changed)
+      reply = result.say
     }
-    project.messages.push({ role: 'assistant', content: reply, insight: parsed.insight, choices: parsed.choices, ts: new Date().toISOString() })
+    const previousChoices = project.messages.filter((item) => item.role === 'assistant').slice(-6).flatMap((item) => item.choices || [])
+    const choices = dedupeDirectorChoices(parsed.choices, previousChoices)
+    recordBriefRevision(project, artifactChanges, parsed.insight)
+    project.messages.push({ role: 'assistant', content: reply, insight: parsed.insight, choices, ts: new Date().toISOString() })
     store.save(project)
     userTurnPersisted = false
     res.json(project)
