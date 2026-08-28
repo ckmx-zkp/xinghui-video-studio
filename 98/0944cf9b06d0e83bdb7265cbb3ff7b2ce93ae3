@@ -1,0 +1,43 @@
+video-studio/src/App.tsx
+  s_e68cc75e7d1274::t_6c9c44c22a871a 492,494-497,500-503,517,541-553
+  s_e68cc75e7d1274::t_93785d4c29061e 51-63,104-105
+  s_e68cc75e7d1274::t_a89bff12ff78be 493
+video-studio/src/App.css
+  s_e68cc75e7d1274::t_3a3f7acd913b79 29
+video-studio/test/workflow.test.mjs
+  s_e68cc75e7d1274::t_d3482eb24a3873 197,200
+  s_e68cc75e7d1274::t_c1d895f43361df 7,96,106-127
+video-studio/server.mjs
+  s_e68cc75e7d1274::t_befe69e754e396 1333,1335-1336,1346-1348
+  s_e68cc75e7d1274::t_0b47e39ef88686 252,260,262,268
+  s_e68cc75e7d1274::t_3c18f136dd6759 658-659,661-663,671-679,681-692,695,697,707,709-711
+  s_e68cc75e7d1274::t_2de1e64348fda5 191-194,196-200,1035
+  s_e68cc75e7d1274::t_d3482eb24a3873 51,60-61
+  s_e68cc75e7d1274::t_d83ab0e71223b5 708
+  s_e68cc75e7d1274::t_6d5f39b5d84c01 1316,1318,1416,1418,1444
+  s_e68cc75e7d1274::t_eb084cb038ab9f 1009-1034
+  s_e68cc75e7d1274::t_a89bff12ff78be 195,660,664-670,680,693-694,696,698-706
+  s_e68cc75e7d1274::t_2d2c2a1d80a626 1387,1417,1419,1429,1448,1460-1472,1474
+  s_e68cc75e7d1274::t_389b6a6e382ede 876,893-896,929
+video-studio/projects.mjs
+  s_e68cc75e7d1274::t_e2ba7e0ccea990 40-41,71-75
+  s_e68cc75e7d1274::t_9e17980ade499d 76
+video-studio/director.mjs
+  s_e68cc75e7d1274::t_e2ba7e0ccea990 169,172,178-179,184,247-248,270-274,281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "980944cf9b06d0e83bdb7265cbb3ff7b2ce93ae3",
+  "prompts": {},
+  "sessions": {
+    "s_e68cc75e7d1274": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04789-3446-7eb0-a92c-b96345d93950",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kunpeng2.zhang <kunpeng2.zhang@ly.com>"
+    }
+  }
+}
